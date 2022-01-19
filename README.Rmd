@@ -1,13 +1,7 @@
 ---
-output:
-  html_document: 
-    keep_md: true
-  
-  # github_document: # can leave html_document first if you set `html_preview: false` under github_document.
-    # html_preview: false
-# always_allow_html: true
+title: "NE Nigeria Climate and Health/Nutrition Analysis"
+output: github_document
 ---
-
 <!-- README.md is generated from README.Rmd. Please edit that file -->
 
 ```{r, include = FALSE}
@@ -20,7 +14,6 @@ knitr::opts_chunk$set(
 )
 ```
 
-# NE Nigeria Climate and Health/Nutrition Outcomes Analysis
 
 <!-- badges: start -->
 <!-- badges: end -->
@@ -130,7 +123,14 @@ precip_awd_dygraph<-dygraph(dat_xts) %>%
   
 ```{r, results="asis"}
 
-precip_awd_dygraph
+htmltools::tags$iframe(
+  src=file.path(here::here("outputs/plots"), "awd_cases_precip_moisture.html"),
+  width="100%",
+  height="600",
+  scrolling="no",
+  seamless="seamless",
+  frameBorder="0"
+)
 
 ```
 
