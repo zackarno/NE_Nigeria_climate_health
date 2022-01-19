@@ -1,9 +1,11 @@
 ---
 output:
-  # html_document: default
-  github_document: # can leave html_document first if you set `html_preview: false` under github_document.
-    html_preview: false
-always_allow_html: true
+  html_document: 
+    keep_md: true
+  
+  # github_document: # can leave html_document first if you set `html_preview: false` under github_document.
+    # html_preview: false
+# always_allow_html: true
 ---
 
 <!-- README.md is generated from README.Rmd. Please edit that file -->
