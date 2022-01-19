@@ -1,0 +1,27 @@
+---
+title: "rgee_learning_cheats"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+- scale changes when compositing.
+  + don't think it matters as long as you set the scale properly when using subsequent reducers
+- `
+
+```{r cars}
+summary(cars)
+```
+
+### wish list
+- subsetting images from ImageCollection using index
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+

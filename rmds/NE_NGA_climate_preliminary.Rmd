@@ -1,0 +1,1384 @@
+---
+title: "NE Nigeria Exploratory"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r libraries}
+library(tidyverse)
+library(rgee)
+library(sf)
+invisible(purrr::map(list.files(here::here("R"),full.names = T),.f = source))
+
+```
+
+
+##Load data
+
+```{r load_data}
+
+ee_Initialize()
+
+# 16 day ndvi composites
+ndvi_dat_src <- "MODIS/006/MOD13Q1"
+ndvi <- ee$ImageCollection(ndvi_dat_src)
+
+# ee_get_date_ic(ndvi)
+
+gee_dat_src <- "UCSB-CHG/CHIRPS/DAILY"
+chirps_src <- "UCSB-CHG/CHIRPS/DAILY"
+gee_dat <- ee$ImageCollection(gee_dat_src)
+chirps <- ee$ImageCollection(chirps_src)
+
+awd <- readxl::read_excel(here::here("data/Borno_EWARS_awd_under5_2017_2021.xlsx")) |> 
+  rename(ADM2_EN = `...1`)
+
+muac <- read_rds(file = here::here("data/muac_201701_202111.rds"))
+admins <- load_nga_admins()
+```
+
+## Clean up data
+### AWD data
+
+- AWD data is just caseloads from Borno state. 
+- Should make LGA names match shapefile
+```{r}
+
+ne_lgas<- admins$lga |> 
+  st_drop_geometry() |> 
+  filter(ADM1_EN %in% c("Yobe","Borno","Adamawa")) 
+
+awd <- awd |> 
+  mutate(
+    ADM2_EN= str_replace_all(string = ADM2_EN,c("Askira Uba"="Askira/Uba","Kala Balge"="Kala/Balge" ))
+  )
+awd_long <- awd |> 
+  pivot_longer(-1,names_to = "date",values_to = "cases") |> 
+  left_join(ne_lgas |> select(ADM1_EN,ADM2_EN)) |> 
+  select(ADM1_EN,ADM2_EN,everything())
+
+```
+
+### MUAC data
+- remove records with no muac screenings
+- create date time
+```{r}
+muac |> 
+  filter(is.na(new_otp_admissions)& !is.na(muac_total_screened))
+
+muac_filt <- muac |> 
+  filter(
+    !is.na(new_otp_admissions)|(is.na(new_otp_admissions) & !is.na(muac_total_screened)),
+    !is.na(State) 
+    ) 
+# there are some records with LGA missing, but ward present- should recode
+ward_lga_lookup<- admins$ward$ADM2_EN |> 
+  set_names(admins$ward$ADM3_EN)
+
+muac_cleaned <- muac_filt|> 
+  mutate(
+    across(.cols= matches("^muac_|^new_"), ~replace_na(.x,0)),
+    across(.cols = c("State","LGA","Ward"),~str_to_title(.x)),
+    mo= str_to_title(mo),
+    date= paste0(yr,"-",mo,"-01"),
+    date_dt= lubridate::ymd(date),
+    pct_muac_red= (muac_red/muac_total_screened)*100,
+    LGA= str_replace_all(LGA, c("Askira-Uba"="Askira/Uba",
+                                "Postiskum" ="Potiskum" ,
+                                "Gaidam" ="Geidam",
+                                "Tarmuwa" ="Tarmua" )),
+    # fix these na LGAs that have wards
+    LGA = if_else(is.na(LGA),recode(Ward, !!!ward_lga_lookup),LGA)
+    
+    )
+
+```
+### Admin data
+- disregard wards for now
+- simplify file. Complex polys are difficult for GEE, especially when stored in memory (can upload as asset later)
+```{r}
+admins_simp <- admins |> 
+  list_modify("ward"=NULL) |> 
+  map(~.x |> 
+        filter(ADM1_EN %in% c("Borno","Adamawa","Yobe")) |> 
+        st_simplify(dTolerance = 0.7)
+  )
+
+admins_simp$overall <- admins_simp$state |> 
+  summarise() |> 
+  mutate(ADM= "overall")# little hack for later
+```
+
+## Health Data overview
+### Muac overview
+
+- case breakdown
+```{r}
+muac_long1 <- muac_cleaned |> 
+  select(-yr, -mo, -date,-pct_muac_red ) |> 
+  pivot_longer(c("muac_total_screened","muac_red","new_otp_admissions") )
+
+
+plot_muac_cases_overall <- muac_long1|> 
+  group_by(name,date_dt,.drop=F ) |> 
+  summarise(
+    cases=sum(replace_na(value,0))
+  ) |> 
+  ggplot(aes(x=date_dt,y=cases, fill=name, color=name, group= name))+
+  geom_line()+
+    scale_y_continuous(labels = scales::comma)+
+  scale_x_date(
+    # minor_breaks = "months", 
+    breaks= "1 month",
+    # major="year",
+    labels=scales::date_format("%b%y")
+    )+
+  labs(x= "date", title= "MUAC data -Overall Caseload NE NGA")+
+  theme_bw()+
+  theme(
+    axis.text.x = element_text(angle=90)
+  )
+plot_muac_cases_overall
+
+```
+
+- # of cases screened for MUAC classified as red
+```{r}
+muac_long1|> 
+  group_by(State,name,date_dt,.drop=F ) |> 
+  summarise(
+    cases=sum(replace_na(value,0))
+  ) |> 
+  filter(name=="muac_red") |> 
+  ggplot(aes(x=date_dt,y=cases, fill=State, color=State, group= State))+
+  geom_line()+
+  scale_y_continuous(labels = scales::comma)+
+  scale_color_manual(values = c("#959596","#F49595","#BDB7A6"))+
+  scale_x_date(
+    # minor_breaks = "months", 
+    breaks= "1 month",
+    # major="year",
+    labels=scales::date_format("%b%y")
+    )+
+  labs(x= "date", title= "# Muac Screenings Classified as Red by State")+
+  theme_bw()+
+  theme(
+    axis.text.x = element_text(angle=90)
+  )
+```
+
+- % MUAC screened classified as red
+```{r}
+muac_long2 <- muac_cleaned |> 
+  select(-yr, -mo, -date ) |> 
+  pivot_longer(c("muac_total_screened","muac_red","new_otp_admissions","pct_muac_red") )
+
+muac_long2 |> 
+  filter(name=="pct_muac_red") |> 
+    group_by(State,name,date_dt,.drop=F ) |> 
+  summarise(
+    cases=mean(replace_na(value,0))
+  ) |> 
+  ggplot(aes(x=date_dt,y=cases, fill=State, color=State, group= State))+
+  geom_line()+
+  scale_y_continuous(labels = scales::comma)+
+  scale_color_manual(values = c("#959596","#F49595","#BDB7A6"))+
+  scale_x_date(
+    # minor_breaks = "months", 
+    breaks= "1 month",
+    # major="year",
+    labels=scales::date_format("%b%y")
+    )+
+  labs(x= "date", title= "% MUAC Screenings Classified as Red by State")+
+  theme_bw()+
+  theme(
+    axis.text.x = element_text(angle=90)
+  )
+```
+
+- **New OTP admissions** - Indicator of choice from this data set
+```{r}
+muac_long2 |> 
+  filter(name=="new_otp_admissions") |> 
+    group_by(State,name,date_dt,.drop=F ) |> 
+  summarise(
+    cases=sum(replace_na(value,0))
+  ) |> 
+  ggplot(aes(x=date_dt,y=cases, fill=State, color=State, group= State))+
+  geom_line()+
+  scale_y_continuous(labels = scales::comma)+
+  scale_color_manual(values = c("#959596","#F49595","#BDB7A6"))+
+  scale_x_date(
+    # minor_breaks = "months", 
+    breaks= "1 month",
+    # major="year",
+    labels=scales::date_format("%b%y")
+    )+
+  labs(x= "date", title= "# New OTP admissions by State")+
+  theme_bw()+
+  theme(
+    axis.text.x = element_text(angle=90)
+  )
+```
+
+- New OTP admissions in Borno State (by LGA)
+```{r}
+
+
+muac_long2 |> 
+  filter(name=="new_otp_admissions") |> 
+  filter(State=="Borno") |> 
+  group_by(LGA) |> 
+  mutate(
+    lga_total= sum(replace_na(value,0))
+  ) |> 
+  group_by(State) |> 
+  mutate(
+    state_total= sum(replace_na(value,0)),
+    lga_pct= lga_total/state_total
+    ) |>
+  filter(lga_pct>0.03) |> 
+  ungroup() |> 
+  group_by(LGA,name,date_dt,.drop=F ) |> 
+  summarise(
+    cases=sum(replace_na(value,0))
+  ) |> 
+  ggplot(aes(x=date_dt,y=cases, fill=LGA, color=LGA, group= LGA))+
+  geom_line()+
+  scale_y_continuous(labels = scales::comma)+
+  scale_x_date(
+    # minor_breaks = "months", 
+    breaks= "1 month",
+    # major="year",
+    labels=scales::date_format("%b%y")
+    )+
+  labs(x= "date", title= "Borno: New OTP admissions by LGA",subtitle = "LGAs with > 3 % Total Borno OTP admissions")+
+  theme_bw()+
+  theme(
+    axis.text.x = element_text(angle=90)
+  )
+
+
+
+
+```
+### AWD overview
+```{r}
+# clean up some classes & round months for monthly agg of AWD cases
+awd_long <- awd_long |> 
+  mutate(
+    cases= as.numeric(cases),
+    date_dt= lubridate::ymd(date),
+    floor_dt= lubridate::floor_date(date_dt, "month")
+  )
+
+# AWD cases per month
+awd_monthly_long <- awd_long |> 
+  group_by(floor_dt) |> 
+  summarise(
+    cases=sum(cases,na.rm=T)
+  ) 
+```
+
+
+### AWD vs MUAC
+```{r}
+
+new_otp_borno_monthly <- muac_long2 |> 
+  filter(name=="new_otp_admissions") |> 
+  filter(State=="Borno") |> 
+  group_by(date_dt) |> 
+  summarise(
+    new_otp_admissions= sum(replace_na(value,0))
+  ) |> 
+  rename(floor_dt="date_dt")
+
+awd_otp_joined <- awd_monthly_long |> 
+  rename(awd_cases= "cases") |> 
+  left_join(new_otp_borno_monthly)
+
+awd_otp_long <- awd_otp_joined |> 
+  pivot_longer(-floor_dt)
+
+windows();awd_otp_long |> 
+  ggplot(aes(x=floor_dt, y= value, color= name, fill= name, group=name))+
+  geom_line()+
+    scale_y_continuous(labels = scales::comma)+
+  scale_x_date(
+    # minor_breaks = "months", 
+    breaks= "1 month",
+    # major="year",
+    labels=scales::date_format("%b%y")
+    )+
+  labs(x= "date", title= "Borno: New OTP & AWD cases")+
+  theme_bw()+
+  theme(
+    axis.text.x = element_text(angle=90)
+  )
+
+awd_otp_joined |> 
+  ggplot(aes(x=awd_cases, y=new_otp_admissions))+
+  geom_point(alpha=0.3)+
+  labs(x= "AWD Cases", y="New OTP Admissions")+
+  theme_bw()
+
+```
+
+# GEE Aggregation
+### CHIRPS
+- Retrieve daily CHIRPS data from 1981 to 2021
+- For each month (1981-2021) calculate the sum of the precipitation to get monthly precip
+```{r, eval=F}
+
+monthly_precip <- yr_mo_composite_stat_ic(dat = chirps,
+                                          month_range = c(1,12),
+                                          year_range = c(1981,2021),
+                                          stat = "sum")
+
+monthly_precip |> ee_get_date_ic()
+
+monthly_precip |> ee_print()
+
+monthly_precip$first()$getInfo()
+ndvi_monthly_2010_2015$first()$getInfo()
+
+monthly_precip_renamed <- monthly_precip$ 
+  # CHIRPS release is delayed by a month or 2 so you need to pre-filter
+  # or face difficulty later
+  filterDate("1981-01-01","2021-11-30") |> 
+  ee$ImageCollection$map(
+    function(x) {
+      date <- ee$Date(x$get("system:time_start"))$format('YYYY_MM_dd')
+      name <- ee$String$cat("pr_", date)
+      x$select("precipitation")$rename(name)
+    })
+
+
+```
+
+- extract median monthly precipitation (mm) at admin 1 , admin 2, and overall (Borno + Yobe + Adamawa)
+- clean up output to tidy long format
+- save `.rds` file so expensive calcs can be skipped in future.
+
+```{r, eval=F}
+keep_cols <-  c("ADM1_EN","ADM2_EN","ADM")
+system.time( # why taking so long... 348 s? 
+mo_precip_agg <- admins_simp |> 
+  map2( .y = keep_cols,
+    ~ ee_extract(
+    x = monthly_precip_renamed,
+    y = .x[.y],
+    scale = 5500,
+    fun = ee$Reducer$median(),
+    sf = TRUE
+  )
+)
+)
+
+mo_precip_agg_long <- mo_precip_agg |> 
+  map(
+    ~.x |> 
+       st_drop_geometry() |> 
+      pivot_longer(-1) |> 
+      mutate(
+        date= str_remove(string = name, pattern = ".*pr_") |> 
+          str_replace_all("_","-") |> lubridate::ymd()
+
+  ) 
+  )
+# mo_precip_agg_long |>
+#   saveRDS(file = here::here("data/monthly_precip_aggs.rds"))
+
+
+```
+
+
+
+```{r}
+monthly_precip_aggs <- read_rds(here::here("data/monthly_precip_aggs.rds"))
+
+
+# left over from checking that no yr_mo_composite_stat function gave same results - all good
+
+# ck1 <- monthly_precip_aggs$overall |> 
+#   left_join(
+#     mo_precip_agg_long$overall |> 
+#       rename(value_new= "value")
+#   )
+# all(ck1$value==ck1$value_new)
+```
+
+- **Malnutrition factors** 
+  + might not be directly related to precipitation
+  + could have a longer lag time?
+  + perhaps more related to famine conditions
+    + consecutive dry days/# dry days in month (need to figure out most sensible way to spatial aggregate)
+    + Land surface temperature - should pull some references, but I think this has been shown to have predictive power related to agricultural decline
+  + z-scores/comparison to historical could be important as they could be influenced by adaptation strategies.
+
+### PDSI (TERRA)
+```{r}
+
+
+
+
+terra <- ee$ImageCollection("IDAHO_EPSCOR/TERRACLIMATE")
+
+terra_temp_filt <- terra$
+  filterDate("2000-01-01","2020-12-01") |> 
+  ee$ImageCollection$map(
+    function(x) {
+      date <- ee$Date(x$get("system:time_start"))$format('YYYY_MM_dd')
+      name <- ee$String$cat("pdsi_", date)
+      x$select("pdsi")$rename(name)
+    })
+
+```
+
+
+- extract to admins
+
+```{r}
+cat("terra pdsi resolution:", terra_temp_filt$first()$projection()$nominalScale()$getInfo(),"m")
+
+
+system.time( # ~80 s on 8 gb machine
+mo_pdsi_agg <- admins_simp |> 
+  map2( .y = keep_cols,
+    ~ ee_extract(
+    x = terra_temp_filt,
+    y = .x[.y],
+    scale = 4638,
+    fun = ee$Reducer$median(),
+    sf = TRUE
+  )
+)
+)
+
+
+mo_pdsi_long <- mo_pdsi_agg |> 
+  map(
+    ~.x |> 
+       st_drop_geometry() |> 
+      pivot_longer(-1) |> 
+      mutate(
+        date= str_remove(string = name, pattern = ".*pdsi_") |> 
+          str_replace_all("_","-") |> lubridate::ymd()
+
+  ) 
+  )
+
+
+mo_pdsi_long$overall |> 
+  ggplot(aes(x=date,y =value))+
+  geom_line()
+```
+
+### NDVI (MODIS 16 day)
+- MODIS 250 m 16 day composites 2000-2021.
+- 2 images/mo
+  + monthly mean composites (mean of 2 images at pixel level)
+  + for period of interest (approximately 2017-2021) subtract **10 year** average from monthly composite?
+  
+
+```{r}
+
+
+ndvi |> ee_get_date_ic()
+
+ndvi_only <-  ndvi$select("NDVI")
+ndvi_only |> ee_print()
+ndvi_only|> ee_get_date_ic() |> pull(time_start) |> range()
+ndvi_only$first()$getInfo()
+
+
+
+month_sequence <- ee$List$sequence(1,12)
+year_sequence <-  ee$List$sequence(2016, 2021)
+ndvi_10_yr_mo <- month_sequence$map(
+   ee_utils_pyfunc(
+     function(m) {
+       ndvi_mean <- ndvi_only$filter(ee$Filter$calendarRange(2000, 2010, 'year'))$
+         filter(ee$Filter$calendarRange(m, m, 'month'))$
+         mean()$
+         rename("NDVI_mean")$
+         set("system:time_start", ee$Date$millis(ee$Date$fromYMD(2000,m,1)) )
+       
+       ndvi_std <- ndvi_only$filter(ee$Filter$calendarRange(2000, 2010, 'year'))$
+         filter(ee$Filter$calendarRange(m, m, 'month'))$
+         reduce(ee$Reducer$stdDev())$
+         rename("NDVI_std")$
+         set("system:time_start", ee$Date$millis(ee$Date$fromYMD(2000,m,1)) )
+       
+       
+       ndvi_mean$addBands(ndvi_std)
+     }
+
+)
+)
+
+ndvi_10_yr_mo <- ee$ImageCollection$fromImages(ndvi_10_yr_mo$flatten()) 
+
+ndvi_10_yr_mo |> ee_print()
+ndvi_mo_2016_2021<- yr_mo_composite_stat_ic(dat = ndvi_only,
+                                                 month_range = c(1,12),
+                                                 year_range = c(2016,2021),stat = "mean")
+ndvi_mo_2016_2021 |> ee_print()
+ndvi_mo_2016_2021
+# so what we want to do... 
+# for each composite 2016-2020 we want to subtrack the monthly 10 year composite... thats what we want to do.
+recent_sub_hist_list <- year_sequence$map(
+  ee_utils_pyfunc(
+     function(y) {
+       month_sequence$map(
+         ee_utils_pyfunc(
+           function(m){
+             recent_yrmo<- ee$Image(ndvi_mo_2016_2021$
+              filter(ee$Filter$calendarRange(y, y, 'year'))$
+              filter(ee$Filter$calendarRange(m, m, 'month'))$
+                first()
+             )
+             hist_mo <- ee$Image(ndvi_10_yr_mo$
+                                   filter(ee$Filter$calendarRange(2000, 2000, 'year'))$
+                                   filter(ee$Filter$calendarRange(m, m, 'month'))$
+                                   first()
+               )
+             
+            
+            NDVI_diff <- recent_yrmo$select("NDVI")$
+              subtract(hist_mo$select("NDVI_mean"))$
+              rename("NDVI_diff")
+            
+            NDVI_z <- NDVI_diff$select("NDVI_diff")$
+              divide(hist_mo$select("NDVI_std"))$
+              rename("NDVI_Z")
+            
+            recent_yrmo$addBands(NDVI_diff)$addBands(NDVI_z)$
+              set("system:time_start",ee$Date$millis(ee$Date$fromYMD(y,m,1)))
+           }
+         )
+       )
+       
+     }
+  
+)
+)
+
+
+recent_sub_hist_list |> ee_print()
+recent_sub_hist_ic <- ee$ImageCollection$fromImages(recent_sub_hist_list$flatten())
+recent_sub_hist_ic |> ee_print()
+recent_sub_hist_ic$size()$getInfo()
+
+
+recent_sub_hist_ic |> ee_print()
+recent_sub_hist_ic$first()$propertyNames()$getInfo()
+```
+
+- spatial extraction
+```{r}
+# interesting that scale changes ... i think it is getting erased and replaced by default values when compositing
+cat("MODIS NDVI resolution:", recent_sub_hist_ic$first()$projection()$nominalScale()$getInfo(),"m")
+cat("MODIS NDVI resolution:", ndvi_only$first()$projection()$nominalScale()$getInfo(),"m")
+cat("MODIS NDVI resolution:", ndvi_mo_2016_2021$first()$projection()$nominalScale()$getInfo(),"m")
+cat("MODIS NDVI resolution:", ndvi_10_yr_mo$first()$projection()$nominalScale()$getInfo(),"m")
+
+
+recent_sub_hist_ic$first()$bandNames()$getInfo()
+
+ndvi_2016_2021_diff_renamed <- recent_sub_hist_ic |> 
+  # CHIRPS release is delayed by a month or 2 so you need to pre-filter
+  # or face difficulty later
+  # filterDate("1981-01-01","2021-11-30") |> 
+  ee$ImageCollection$map(
+    function(x) {
+      date <- ee$Date(x$get("system:time_start"))$format('YYYY_MM_dd')
+      # name <- ee$String$cat("pr_", date)
+      # x$select("NDVI")$rename(name)
+      
+      ndvi_bandname <- ee$String$cat("NDVI_", date)
+      diff_ndvi_bandname <- ee$String$cat("diff_NDVI_", date)
+      z_ndvi_bandname <- ee$String$cat("z_NDVI_", date)
+      x$rename(ndvi_bandname,diff_ndvi_bandname,z_ndvi_bandname)
+      
+    })
+
+ndvi_2016_2021_diff_renamed$first()$bandNames()$getInfo()
+ndvi_2016_2021_diff_renamed |> ee_print()
+
+# can i aggregate all 3 band seoarately? for all 3 admins?... i suppose i could double map...
+system.time( 
+  # approx 85 s for single band  ? 
+  # 177.07 s for 3 bands
+  # 25 s another time for 3 
+ndvi_2016_2021_diff_admin <- admins_simp |> 
+  map2( .y = keep_cols, 
+    ~ ee_extract(
+    x = ndvi_2016_2021_diff_renamed,
+    # x = recent_sub_hist_ic,
+    y = .x[.y],
+    scale = 250,
+    fun = ee$Reducer$median(),
+    sf = TRUE
+  )
+)
+)
+
+#checkout long term monthly to see what the deal is with standar dev
+  
+ndvi_10_yr_mo$first()$bandNames()$getInfo()
+longterm_monthly_renamed <- ndvi_10_yr_mo |> 
+
+  ee$ImageCollection$map(
+    function(x) {
+      date <- ee$Date(x$get("system:time_start"))$format('YYYY_MM_dd')
+      # name <- ee$String$cat("pr_", date)
+      # x$select("NDVI")$rename(name)
+      
+      mean_ndvi_bandname <- ee$String$cat("mean_NDVI_", date)
+      std_ndvi_bandname <- ee$String$cat("std_NDVI", date)
+      
+      x$rename(mean_ndvi_bandname,std_ndvi_bandname)
+      
+    })
+
+system.time( 
+  # approx 85 s for single band  ? 
+  # 177.07 s for 3 bands
+  # 25 s another time for 3 
+longterm_monthly <- admins_simp |> 
+  map2( .y = keep_cols, 
+    ~ ee_extract(
+    x = longterm_monthly_renamed,
+    # x = recent_sub_hist_ic,
+    y = .x[.y],
+    scale = 250,
+    fun = ee$Reducer$mean(),
+    sf = TRUE
+  )
+)
+)
+
+ndvi_2016_2021_diff_admin2 <- admins_simp |> 
+  map2( .y = keep_cols, 
+    ~ ee_extract(
+    x = ndvi_2016_2021_diff_renamed,
+    # x = recent_sub_hist_ic,
+    y = .x[.y],
+    scale = 250,
+    fun = ee$Reducer$mean(),
+    sf = TRUE
+  )
+)
+
+
+
+ndvi_mo_2016_2021_long <- ndvi_2016_2021_diff_admin |> 
+  map(
+    ~.x |> 
+       st_drop_geometry() |> 
+      pivot_longer(-1) |> 
+      mutate(
+        category= str_extract(string = name,pattern = "diff_NDVI|_NDVI_|z_NDVI") |> 
+          str_replace_all(pattern = "_NDVI_","NDVI"),
+        date= str_remove(string = name, pattern = ".*NDVI_") |> 
+          str_replace_all("_","-") |> lubridate::ymd()
+  )
+  )
+
+ndvi_mo_2016_2021_long2 <- ndvi_2016_2021_diff_admin2 |> 
+  map(
+    ~.x |> 
+       st_drop_geometry() |> 
+      pivot_longer(-1) |> 
+      mutate(
+       category= str_extract(string = name,pattern = "diff_NDVI|_NDVI_|z_NDVI") |> 
+          str_replace_all(pattern = "_NDVI_","NDVI"),
+        date= str_remove(string = name, pattern = ".*NDVI_") |> 
+          str_replace_all("_","-") |> lubridate::ymd()
+  )
+  )
+long_term_monthly_long <- longterm_monthly |> 
+  map(
+    ~.x |> 
+       st_drop_geometry() |> 
+      pivot_longer(-1) |> 
+      mutate(
+        category= str_extract(string = name,pattern = "mean_NDVI|std_NDVI") ,
+        date= str_remove(string = name, pattern = ".*DVI_") |> 
+          str_replace_all("_","-") |> lubridate::ymd()
+  )
+  )
+
+```
+
+
+
+```{r}
+
+saveRDS(ndvi_mo_2016_2021_long,
+        here::here("data/monthly_ndvi_stats_2016_2021.rds"))
+
+```
+
+
+```{r}
+
+
+ndvi_mo_2016_2021_long$overall |> 
+  ggplot(aes(x= date, y= value))+
+  geom_line()+
+  scale_x_date(
+    minor_breaks = "1 month",
+    breaks= "1 year",
+    # major="year",
+    labels=scales::date_format("%b")
+  )+
+  facet_wrap(~category,nrow=3,scales = "free_y")+
+  theme(
+    axis.text.x = element_text(angle=90)
+  )
+
+ndvi_mo_2016_2021_long$overall |> 
+  filter(category!= "NDVI") |> 
+  ggplot(aes(x= date, y= value))+
+  geom_line()+
+  scale_x_date(
+    minor_breaks = "1 month",
+    breaks= "1 year",
+    # major="year",
+    labels=scales::date_format("%b")
+  )+
+  geom_hline(yintercept=0, color="red")+
+  facet_wrap(~category,nrow=3,scales = "free_y")+
+  theme(
+    axis.text.x = element_text(angle=90)
+  )
+
+
+windows();ndvi_mo_2016_2021_long$overall |> 
+  filter(category=="diff_NDVI") |> 
+  ggplot(aes(x= date, y= value))+
+  geom_line()+
+  scale_x_date(
+    minor_breaks = "1 month",
+    breaks= "1 year",
+    # major="year",
+    labels=scales::date_format("%b%y")
+  )+
+  geom_hline(yintercept=0, color="red")+
+  geom_line(data=ndvi_mo_2016_2021_long$overall |> 
+  filter(category=="z_NDVI"), aes(x=date,y=value*500),color="orange")+
+  scale_y_continuous(
+    sec.axis = sec_axis( ~.x/500)
+  )
+
+# its odd how Feb looks similar in diff, but different in z
+
+ndvi_mo_2016_2021_long$overall |> 
+  filter(category=="diff_NDVI") |> 
+  filter(lubridate::month(date)=="3")
+
+ndvi_mo_2016_2021_long$overall |> 
+  filter(category=="z_NDVI") |> 
+  filter(lubridate::month(date)=="3")
+long_term_monthly_long$overall |> 
+  # filter(category=="std_NDVI") |> 
+  filter(lubridate::month(date)=="3")
+
+# this is annoying i have to find out...
+# is it because its the average z score not the average mean - average x/ average sd?
+# should experiment with medians vs means?
+
+
+diff_mar2016 <- 30.9 
+diff_mar2017 <- 31.6
+z_mar2016 <- 0.463
+z_mar2017 <- 0.819
+diff_mar2016/x = z_mar2016
+sd_supposed <- diff_mar2016/z_mar2016
+diff_mar2017/sd_supposed
+diff_mar2016/sd_supposed
+
+
+# its odd how Feb looks similar in diff, but different in z
+
+ndvi_mo_2016_2021_long2$overall |> 
+  filter(category=="diff_NDVI") |> 
+  filter(lubridate::month(date)=="3")
+
+ndvi_mo_2016_2021_long2$overall |> 
+  filter(category=="z_NDVI") |> 
+  filter(lubridate::month(date)=="3")
+
+# version with ee$reducer$mean()
+windows();ndvi_mo_2016_2021_long2$overall |> 
+  filter(category=="diff_NDVI") |> 
+  ggplot(aes(x= date, y= value))+
+  geom_line()+
+  scale_x_date(
+    minor_breaks = "1 month",
+    breaks= "1 year",
+    # major="year",
+    labels=scales::date_format("%b%y")
+  )+
+  geom_hline(yintercept=0, color="red")+
+  geom_line(data=ndvi_mo_2016_2021_long$overall |> 
+  filter(category=="z_NDVI"), aes(x=date,y=value*500),color="orange")+
+  scale_y_continuous(
+    sec.axis = sec_axis( ~.x/500)
+  )
+# 
+# ndvi_hist_current_together_long <- bind_rows(
+# ndvi_mo_2016_2021_long$overall |> 
+#   mutate(
+#     category="absolute_value"
+#   ),ndvi_diff_long$overall |> 
+#   mutate(
+#     category="diff from mean"
+#   )
+# ) 
+
+# windows();ndvi_hist_current_together_long|> 
+#   ggplot(aes(x= date, y= value))+
+#   geom_line()+
+#   scale_x_date(
+#     minor_breaks = "1 months",
+#     breaks= "1 year",
+#     # major="year",
+#     labels=scales::date_format("%b")
+#   )+
+#   facet_wrap(~category,nrow=2,scales = "free_y")+
+#   theme(
+#     axis.text.x = element_text(angle=90)
+#   )
+
+  
+set_timestamp <- function(img){
+  img$
+    set("system:time_start",ee$Date$millis("system:time_start"))
+}
+```
+
+- scrap trying to figure out using yr_mo_stat function
+```{r, eval=F}
+# ndvi_tfilt <- ndvi_only$filterDate("2000-02-01","2015-12-31") 
+# 
+# ndvi_monthly_2000_2015<- yr_mo_composite_stat_ic(dat = ndvi_tfilt,
+#                                                  month_range = c(1,12),
+#                                                  year_range = c(2000,2015),stat = "mean")
+
+ndvi_monthly_2000_2015<- yr_mo_composite_stat_ic(dat = ndvi_only,
+                                                 month_range = c(1,12),
+                                                 year_range = c(2000,2015),stat = "mean")
+
+ndvi_monthly_2000_2015 <- ndvi_monthly_2010_2015$
+  filterDate("2000-02-01","2015-12-31") 
+ndvi_monthly_2000_2015 |> ee_print()
+
+
+ndvi_monthly_2010_20152$
+  filterDate("2000-02-01","2015-12-31") |> 
+  ee_print()
+
+ndvi_monthly_2010_2015 |> ee_get_date_ic() 
+ndvi_monthly_2010_2015 |> ee_print() 
+ndvi_monthly_2010_2015$first()$getInfo()
+
+
+addTime <- function(image) {
+  image$addBands(image$metadata('system:time_start'));
+}
+
+ndvi_monthly_2010_2015$map(
+       function(image) {
+       # image$addBands(ee$Number(image$metadata('system:time_start')));
+       image$metadata('system:time_start')$getInfo()
+}
+)
+# month_list$map(
+#           ee_utils_pyfunc(function (m) {
+ck2 <- ndvi_monthly_2000_2015$map(
+   ee_utils_pyfunc(
+     function(image) {
+       image$set('system:time_start', image$get('system:time_start'))
+       # image$addBands((image$metadata('system:time_start')));
+       # image$metadata('system:time_start')$getInfo()
+}
+)
+)
+ck2$select("system:time_start")$first()$getInfo()
+
+ck3 <- ck2$
+  filter(ee$Filter$calendarRange(2000, 2010, 'year'))$
+  filter(ee$Filter$calendarRange(1, 1, 'month'))
+
+ck3 <- ndvi_only$
+  filter(ee$Filter$calendarRange(2000, 2010, 'year'))$
+  filter(ee$Filter$calendarRange(1, 1, 'month'))$
+  mean()
+ck3$size()$getInfo()
+ck3 |> ee_print()
+ee$datetime
+```
+
+
+
+  
+# Additional Indicators
+
+- Drought:
+  + PSI
+
+\begin{equation}
+PSI = {P-Pm\over $\sigma$ }(\#eq:psi)
+\end{equation}
+
+Where:
+
+- P = Total precipitation for period (3 month)
+- Pm = historical mean for period
+- $\sigma$ = Standard deviation for period
+
+also GEE spyder
+https://www.un-spider.org/advisory-support/recommended-practices/recommended-practice-drought-monitoring-spi/step-by-step
+
+
+hey include the Palmer drought severity index (PDSI), surface water supply index (SWSI), reconnaissance drought index (RDI), normalised difference water index (NDWI) and the standardised moisture anomaly index (SMAI) 
+
+
+
+
+
+
+
+
+
+### PDSI (TERRA)
+
+
+
+#### visual terra
+```{r}
+st_centroid(admins_simp$overall)
+# Define the visualization parameters.
+vizParams <- list(
+  bands = c("pdsi_2010_01_01"),
+  min = -400,
+  max = 600,
+  palette = c(
+  "#d73027", "#f46d43", "#fdae61",
+  "#fee08b", "#d9ef8b", "#a6d96a",
+  "#66bd63", "#1a9850"
+)
+  # gamma = c(0.95, 1.1, 1)
+)
+
+# terra_temp_filt$first()$bandNames()$getInfo()
+# Center the map and display the image.
+Map$setCenter(12.47162 ,11.38009, 10) # San Francisco Bay
+
+
+Map$addLayer(ee$Image(terra_temp_filt$first()), vizParams, "false color composite")
+
+```
+
+
+
+
+### PSI
+lets try to calculate 3 month PSI for muac
+
+```{r}
+library(tidyquant)
+muac_cleaned |> count(State)
+monthly_precip_aggs$overall |> 
+  arrange(date)
+
+
+muac_summarised_month <- muac_cleaned |> 
+  group_by(date_dt) |> 
+  summarise(
+    muac_total_screened= sum(muac_total_screened,na.rm=T),
+    muac_red= sum(muac_red,na.rm = T)
+  ) |> 
+  mutate(
+    pct_muac_red= muac_red/muac_total_screened
+  )
+muac_summarised_month |> 
+  ggplot(aes(x=date_dt, y=pct_muac_red))+
+  geom_path()+
+  scale_y_continuous(labels=scales::percent)+
+  (minor_breaks = "months")
+
+
+muac_summarised_month |> 
+  ggplot(aes(x=date_dt, y=muac_red))+
+  geom_path()+
+  scale_y_continuous(labels = scales::comma)+
+  scale_x_date(
+    # minor_breaks = "months", 
+    breaks= "1 month",
+    # major="year",
+    labels=scales::date_format("%b%y")
+    )+
+  theme(
+    axis.text.x = element_text(angle=90)
+  )
+```
+
+
+```{r}
+
+overall_PSI <- monthly_precip_aggs$overall %>%
+  filter(date>="2017-01-01") |> 
+  tq_mutate(
+    select     = value,
+    mutate_fun = rollapply,
+    width      = 3,
+    align      = "right",
+    FUN        = sum,
+    col_rename = "sum_3_mo"
+  ) |> 
+  mutate(
+    month_fct= lubridate::month(date, label =T)
+  ) |> 
+  left_join(
+    monthly_precip_aggs$overall %>%
+  filter(date<"2017-01-01") |> 
+    group_by(month_fct= lubridate::month(date, label=T)) |> 
+    summarise(
+      historical_mean= mean(value,na.rm=T),
+      historical_sd = sd(value,na.rm=T)
+      
+    ) 
+  ) |> 
+  mutate(
+    PSI = (sum_3_mo-historical_mean)/historical_sd
+  )
+
+overall_PSI |> 
+  ggplot(aes(x=date,y=PSI))+
+  geom_path()+
+  geom_point()+
+  scale_y_continuous()+
+  scale_x_date(
+    # minor_breaks = "months", 
+    breaks= "1 month",
+    # major="year",
+    labels=scales::date_format("%b%y")
+    )+
+  theme(
+    axis.text.x = element_text(angle=90)
+  )
+```
+# Precip & AWD
+## Precip (mm) & AWD Borno State
+
+```{r}
+# filter precip to just borno state & records > 2017
+borno_gte2017_precip <- monthly_precip_aggs$state |> 
+  filter(ADM1_EN =="Borno") |> 
+  filter(date>="2017-01-01")
+
+plot_awd_precip <- borno_gte2017_precip |> 
+  ggplot(aes(x=date, value))+
+  geom_path( color="#94CCDC")+
+  geom_path(data=awd_monthly_long, aes(x=floor_dt, y=cases/100), color="#F49595")+
+  scale_x_date(
+    # breaks= "1 month",
+    # major="year", 
+    minor="months",
+    # labels=scales::date_format("%b")
+    )+
+  scale_y_continuous(sec.axis = sec_axis(trans = ~.x*100,name = "AWD Caseload"))+
+  labs(x= "date",y="Precipitation (mm)", title = "Monthly AWD caseload & Precipitation (CHIRPS)",subtitle = "Borno State")+
+  theme_bw()+
+  theme(
+    axis.text.x = element_text(angle = 90)
+  )
+
+plot_awd_precip
+```
+
+### Precip & AWD cases Borno by LGA
+overview
+```{r}
+borno_lga_names <- admins$lga |> 
+  filter(ADM1_EN %in% "Borno") |> 
+  pull(ADM2_EN)
+
+borno_lga_precip_gte2017 <- monthly_precip_aggs$lga |> 
+  filter(ADM2_EN %in% borno_lga_names) |> 
+  filter(date>="2017-01-01")
+
+
+awd_monthly_lga_cases <- awd_long |> 
+  group_by(ADM1_EN,ADM2_EN, floor_dt) |> 
+  summarise(
+    cases= sum(cases, na.rm=T)
+  )
+
+plot3_awd_precip_lga_facet <- borno_lga_precip_gte2017 |> 
+  ggplot(aes(x=date, value))+
+  geom_path( color="#94CCDC")+
+  geom_path(data=awd_monthly_lga_cases, aes(x=floor_dt, y=cases/10), color="#F49595")+
+  scale_x_date(
+    # breaks= "1 month",
+    # major="year", 
+    minor="months",
+    # labels=scales::date_format("%b")
+    )+
+  scale_y_continuous(sec.axis = sec_axis(trans = ~.x*10,name = "AWD Caseload"))+
+  facet_wrap(~ADM2_EN)+
+  labs(x= "Date",
+       y="Precipitation (mm)",
+       title = "Monthly LGA AWD caseload & Precipitation (CHIRPS)",
+       subtitle = "Borno State")+
+  theme_bw()+
+  theme(
+    axis.text.x = element_text(angle = 90)
+  )
+
+plot3_awd_precip_lga_facet
+
+```
+- zoom in 
+
+```{r}
+
+lgas_with_awd_cases<-awd_monthly_lga_cases$ADM2_EN |> unique()
+plots4_lgas <- lgas_with_awd_cases |> 
+  map(
+    ~borno_lga_precip_gte2017 |> 
+      filter(ADM2_EN==.x) |> 
+      ggplot(aes(x=date, value))+
+      geom_path( color="#94CCDC")+
+      geom_path(data=awd_monthly_lga_cases |> filter(ADM2_EN ==.x), 
+                aes(x=floor_dt, y=cases/10), color="#F49595")+
+  scale_x_date(
+    # breaks= "1 month",
+    # major="year", 
+    minor="months",
+    # labels=scales::date_format("%b")
+    )+
+  scale_y_continuous(sec.axis = sec_axis(trans = ~.x*10,name = "AWD Caseload"))+
+  labs(x= "Date",
+       y="Precipitation (mm)",
+       title = "Monthly LGA AWD caseload & Precipitation (CHIRPS)",
+       subtitle = glue::glue("Borno State - {.x}"))+
+  theme_bw()+
+  theme(
+    axis.text.x = element_text(angle = 90)
+  )
+  ) |> 
+  set_names(lgas_with_awd_cases)
+
+
+```
+
+
+```{r}
+
+plots4_lgas$Maiduguri
+plots4_lgas$Shani
+plots4_lgas$Ngala
+plots4_lgas$Monguno
+plots4_lgas$Gwoza
+
+```
+
+### Precipitation Z-Scores & AWD Borno
+lets try with some precipitation Z scores. No evident pattern - hypothesis: AWD linked to natural phenomena and thresholds. Z-scores might be more appropriate when looking at peoples ability to adapt to certain conditions (i.e flood) where there "normal" is very important. However, microbial/physical processes just need a mechanism to contaminate.
+
+```{r}
+
+monthly_avg_precip_lt_2017 <- monthly_precip_aggs$state |> 
+  filter(ADM1_EN =="Borno") |> 
+  filter(date<"2017-01-01") |> 
+  group_by(month_fct= lubridate::month(date,label = T)) |> 
+  summarise(
+    mean_precip= mean(value),
+    sd_precip= sd(value)
+  )
+
+borno_precip_z_gte_2017 <- monthly_precip_aggs$state |> 
+  filter(ADM1_EN =="Borno") |> 
+  filter(date>="2017-01-01") |> 
+  mutate(month_fct=lubridate::month(date, label=T)) |> 
+  left_join(monthly_avg_precip_lt_2017) |> 
+  mutate(
+    precip_z= (value-mean_precip)/sd_precip
+  )
+
+
+awd_precip_z_plot <- borno_precip_z_gte_2017 |> 
+  ggplot(aes(x=date, precip_z))+
+  geom_path( color="blue")+
+  geom_path(data=awd_monthly_long, aes(x=floor_dt, y=cases/1000), color="red")+
+  scale_y_continuous(sec.axis = sec_axis(trans = ~.x*1000,name = "AWD Caseload"))+
+  labs(x= "date",y="Precipitation (Z score)", title = "Monthly AWD caseload & Precipitation (CHIRPS)",subtitle = "Borno State")+
+  theme_bw()
+
+awd_precip_z_plot
+```
+
+## Precip & OTP
+
+```{r}
+
+otp_monthly <- muac_long2 |> 
+  filter(name=="new_otp_admissions") |> 
+    group_by(name,date=date_dt,.drop=F ) |> 
+  summarise(
+    value=sum(replace_na(value,0)),.groups="drop"
+  ) 
+
+precip_monthly_gte2017 <- monthly_precip_aggs$overall |> 
+  mutate(
+    name= "precipitation (mm)"
+  ) |> 
+  filter(date>="2017-01-01") 
+
+precip_monthly_gte2017|> 
+  bind_rows(otp_monthly) |> 
+  ggplot(aes(x=date, y= value))+
+  geom_line()+
+  facet_wrap(~name,scales = "free_y",nrow = 2)
+
+
+plot_otp_precip <- precip_monthly_gte2017 |> 
+  ggplot(aes(x=date, value))+
+  geom_path( color="#94CCDC")+
+  geom_path(data=otp_monthly, aes(x=date, y=value/100), color="#F49595")+
+  scale_x_date(
+    # breaks= "1 month",
+    # major="year", 
+    minor="months",
+    # labels=scales::date_format("%b")
+    )+
+  scale_y_continuous(sec.axis = sec_axis(trans = ~.x*100,name = "AWD Caseload"))+
+  labs(x= "date",y="Precipitation (mm)", title = "Monthly AWD caseload & Precipitation (CHIRPS)",subtitle = "Borno State")+
+  theme_bw()+
+  theme(
+    axis.text.x = element_text(angle = 90)
+  )
+
+plot_otp_precip
+
+precip_monthly_gte2017 |> 
+  select(-name) |> 
+  rename(precip_mm="value") |> 
+  left_join(
+    otp_monthly |> 
+      rename(new_otp="value") |> 
+      select(-name),
+    by="date") |> 
+  ggplot(aes(x=precip_mm,y=new_otp))+
+  geom_point()
+
+
+precip_lga_monthly_gte2017 <- monthly_precip_aggs$lga |> 
+  mutate(
+    name= "precipitation (mm)"
+  ) |> 
+  filter(date>="2017-01-01") 
+
+
+otp_monthly_lga <- muac_long2 |> 
+  filter(name=="new_otp_admissions") |> 
+    group_by(State,LGA,date=date_dt,.drop=F ) |> 
+  summarise(
+    value=sum(replace_na(value,0)),.groups="drop"
+  ) |> 
+  rename(new_otp="value")
+
+precip_otp_lga_monthly_j <- precip_lga_monthly_gte2017 |> 
+  rename(
+    precip_mm=value
+  ) |> 
+  left_join(otp_monthly_lga |> rename(ADM2_EN="LGA")) 
+
+precip_otp_lga_monthly_j |> 
+  filter(State=="Borno") |> 
+  ggplot(aes(x=precip_mm,y=new_otp))+
+  geom_point()+ 
+  facet_wrap(~ADM2_EN)
+```
+
+## Drought (PDSI) & MUAC caseload
+
+```{r}
+
+
+otp_pdsi_monthly <- mo_pdsi_long$overall |> 
+  select(value, date) |> 
+  filter(date>"2015-01-01") |> 
+  mutate(
+    name="PDSI"
+  ) |> 
+  bind_rows(
+    otp_monthly
+  )
+otp_pdsi_monthly |> 
+  ggplot(aes(x=date, y= value,color= name,group=name))+
+  geom_line()
+
+otp_pdsi_monthly |> 
+  ggplot(aes(x=date, y= value))+
+  geom_line()+
+  facet_wrap(~name,scales = "free_y",nrow = 2)
+
+
+
+  
+
+```
+
+
+
+### Drought PDSI Z-Scores
+- do historical comparisons at all overall, state, and LGA
+```{r}
+
+admin_levels<- list(
+     state = c("ADM1_EN","month_fct"),
+     lga= c("ADM2_EN","month_fct"),
+      overall= "month_fct")
+
+
+pdsi_historical_comparison <- mo_pdsi_long |> 
+  map2(.y = admin_levels,
+      ~ .x |> 
+          mutate(month_fct= lubridate::month(date,label=T)) |>
+         compare_to_historical(
+           historical_from = "2000-01-01",
+           historical_to = "2010-12-31",
+           from= "2015-01-01",
+           group_vars = .y)
+         
+         )
+windows();pdsi_historical_comparison$overall |> 
+  select(date, pdsi=value, pdsi_diff=value_diff, pdsi_z= value_z) |> 
+  pivot_longer(-date) |> 
+  bind_rows(
+    otp_monthly
+  ) |> 
+  ggplot(aes(x=date, y= value))+
+  geom_line()+
+   facet_wrap(~name,
+             scales = "free_y",nrow = 4)
+
+pdsi_historical_comparison$overall |> 
+  ggplot(aes(x= value, y=value_diff))+geom_point()
+pdsi_historical_comparison$overall |> 
+  ggplot(aes(x= value, y=value_z))+geom_point()
+
+
+```
+

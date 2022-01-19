@@ -1,5 +1,9 @@
 ---
-output: github_document
+output:
+  # html_document: default
+  github_document: # can leave html_document first if you set `html_preview: false` under github_document.
+    html_preview: false
+always_allow_html: true
 ---
 
 <!-- README.md is generated from README.Rmd. Please edit that file -->
@@ -7,13 +11,206 @@ output: github_document
 ```{r, include = FALSE}
 knitr::opts_chunk$set(
   collapse = TRUE,
-  comment = "#>"
+  comment = "#>",
+  echo = F,
+  message=F,
+  results="hide"
 )
 ```
 
-# NE_Nigeria_climate_health
+# NE Nigeria Climate and Health/Nutrition Outcomes Analysis
 
 <!-- badges: start -->
 <!-- badges: end -->
 Repository to store analysis of climate and health data in NE in Nigeria
 
+```{r, echo=FALSE,message=F}
+library(tidyverse)
+library(dygraphs)
+library(xts)
+
+invisible(purrr::map(list.files(here::here("R"),full.names = T),.f = source))
+```
+
+```{r, echo=F}
+
+awd <- readxl::read_excel(here::here("data/Borno_EWARS_awd_under5_2017_2021.xlsx")) |> 
+  rename(ADM2_EN = `...1`)
+  
+nga_admins <- invisible(load_nga_admins())
+
+ne_lgas <- nga_admins$lga
+awd <- awd |> 
+  mutate(
+    ADM2_EN= str_replace_all(string = ADM2_EN,c("Askira Uba"="Askira/Uba","Kala Balge"="Kala/Balge" ))
+  )
+
+awd_long <- awd |> 
+  pivot_longer(-1,names_to = "date",values_to = "cases") |> 
+  left_join(ne_lgas |> select(ADM1_EN,ADM2_EN)) |> 
+  select(ADM1_EN,ADM2_EN,everything())
+
+awd_long_mj <- awd_long %>% 
+  filter(ADM2_EN %in% c("Maiduguri","Jere"))
+
+# add year-wk - double checked there is only 1 week collected per year per location
+awd_long_mj <- awd_long_mj %>%
+  mutate(
+    yr_wk=paste0(lubridate::year(date),"_",lubridate::week(date))
+  )
+
+awd_long_by_wk <- awd_long_mj %>% 
+  mutate(
+    date= lubridate::ymd(date),
+    cases= as.numeric(cases)
+  ) %>% 
+  group_by(date) %>% 
+  summarise(
+    value=sum(cases,na.rm=T),.groups = "drop"
+  ) %>% 
+  mutate(
+    yr_wk=paste0(lubridate::year(date),"_",lubridate::week(date)),
+    parameter="awd_cases"
+  )
+
+
+```
+
+```{r}
+
+smap <- read_rds(file = here::here("data/SMAP_soil_moisture_3day_maidu_jere.rds"))
+
+chirps_daily_long <- read_rds(here::here("data/chirps_daily_maidu_jere_diss_gte2016.rds"))
+chirps_daily_long <- chirps_daily_long %>% 
+  group_by(yr=lubridate::year(date)) %>% 
+  mutate(
+    cumulative_precip=cumsum(value)
+  ) %>% 
+  ungroup()
+  
+smap_chirps_awd_long <- bind_rows(chirps_daily_long %>% ungroup() %>% 
+  select(-cumulative_precip,-yr),
+  smap,awd_long_by_wk %>% 
+    select(-yr_wk)
+    )
+
+
+smap_chirps_awd_wide<- smap_chirps_awd_long %>% pivot_wider(names_from = parameter,values_from = value)
+
+dat_wide_filt <- smap_chirps_awd_wide %>% 
+  select(date,precip,ssm,susm,awd_cases) %>% 
+  mutate(awd_cases=awd_cases/100) %>% 
+  filter(date>="2016-01-01")
+
+dat_xts<-xts(dat_wide_filt,order.by =  dat_wide_filt$date)
+
+precip_awd_dygraph<-dygraph(dat_xts) %>% 
+  dySeries("precip", label = "precip", axis=('y'),color="#74add1") %>%
+  dySeries("ssm", label = "surface moisture" ,axis=('y'),color="#a6d96a") %>% 
+  dySeries("susm", label = "sub-surface moisture", axis=('y'),color="#8c510a")  %>% 
+  dySeries("awd_cases", label = "awd_cases", axis=('y'),color="red")  %>% 
+
+  dyRangeSelector(dateWindow = c(min(dat_xts$date),
+                                 max(dat_xts$date))) %>% 
+  dyOptions(connectSeparatedPoints = TRUE)
+
+
+```
+
+
+
+## Overview  of Data
+- Below is a graph showing:
+  + precipitation
+  + surface soil moisture
+  + sub-surface soil moisture
+  + AWD cases/100
+  
+```{r, results="asis"}
+
+precip_awd_dygraph
+
+```
+
+
+
+
+## Establishing Environmental Thresholds
+
+- A prominent peak occurs shortly after the start of the rainy season. 
+- Rainfall generally declines after this initial peak
+- Below we have graphed cumulative yearly rainfall against AWD caseload
+  + we see that AWD caseloads tend to peak in a narrow band of cumulative rainfall
+```{r,echo=F,results="asis"}
+
+
+# chirps_daily_long <- chirps_daily_long %>% 
+#   group_by(yr=lubridate::year(date)) %>% 
+#   mutate(
+#     cumulative_precip=cumsum(value)
+#   ) 
+
+yrly_max_case_weeks <- awd_long_by_wk %>% 
+  group_by(yr=lubridate::year(date)) %>%
+  slice_max(order_by =value, n = 1 ) %>% 
+  # filter(value==max(value)) %>% 
+  mutate( 
+    yrmo = paste0(yr,"_",lubridate::month(date))
+  )
+awd_first_peaks <- awd_long_by_wk %>% 
+  filter(
+    date %in%c(yrly_max_case_weeks$date[1:3],
+               "2020-07-19",
+               "2021-07-11")
+  )
+
+chirps_daily_long%>% 
+  ggplot(aes(x=date,cumulative_precip))+
+  geom_line(color="#abd9e9",lwd=1)+
+  geom_line(data= awd_long_by_wk,
+            aes(x=date,y=value/2),
+            lwd=1,color="#fdae61",alpha=0.75)+
+ 
+  labs(y="Yearly cumulative precipitation (mm)")+
+  # drawing lines roughly where the rains start each year
+  # geom_vline(xintercept=lubridate::ymd("2017-05-01"))+
+  # geom_vline(xintercept=lubridate::ymd("2018-04-01"))+
+  # geom_vline(xintercept=lubridate::ymd("2019-05-01"))+
+  # geom_vline(xintercept=lubridate::ymd("2020-05-01"))+
+  # geom_vline(xintercept=lubridate::ymd("2021-05-01"))+
+  geom_vline(xintercept=lubridate::ymd("2017-07-09"),color="#f46d43",lwd=1)+
+  geom_vline(xintercept=lubridate::ymd("2018-07-15"),color="#f46d43",lwd=1)+
+  geom_vline(xintercept=lubridate::ymd("2019-06-30"),color="#f46d43",lwd=1)+
+  geom_vline(xintercept=lubridate::ymd("2020-07-19"),color="#f46d43",lwd=1)+
+  # geom_vline(xintercept=lubridate::ymd("2020-08-30"),)+
+  geom_vline(xintercept=lubridate::ymd("2021-07-11"),color="#f46d43",lwd=1)+
+  geom_hline(yintercept=127,color="#4575b4",lwd=1, linetype="dashed")+
+  geom_hline(yintercept=184,color="#4575b4",lwd=1, linetype="dashed")+
+  # geom_vline(xintercept=lubridate::ymd("2021-08-29"))+
+  geom_point(data=awd_first_peaks, aes(x= date, y= value/2),fill="#fdae61", size= 2,pch=21)+
+  
+  # seems like cases are spiking between 70-300 mm of rain accumulation/
+  # first half of the rainy season
+  scale_y_continuous(
+    sec.axis= sec_axis(trans = ~.x*2,name = "AWD Cases")
+  )+
+  scale_x_date(
+    minor_breaks = "1 month",
+    breaks= "1 month",
+    # major="year",
+    labels=scales::date_format("%b%y")
+  )+
+  theme_bw()+
+  theme(
+    axis.text.x = element_text(angle=90,size = 6)
+  )+
+  annotate(
+    "text", label = "127 mm",
+    x = lubridate::ymd("2015-10-01"), y = 115, size = 3, colour = "#4575b4"
+  )+
+  annotate(
+    "text", label = "186 mm",
+    x = lubridate::ymd("2015-10-01"), y = 200, size = 3, colour = "#4575b4"
+  )
+
+```
