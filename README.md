@@ -15,7 +15,8 @@ Repository to store analysis of climate and health data in NE in Nigeria
     -   sub-surface soil moisture
     -   AWD cases/100
 
-<iframe src="C:/Users/zacka/Documents/GeoCrunch/NE_Nigeria_climate_health/README_files/figure-gfm/awd_cases_precip_moisture.html" width="100%" height="600" scrolling="no" seamless="seamless" frameBorder="0"></iframe>
+<img src="README_files/figure-gfm/awd_cases_precip_moisture.html" />
+
 
 ## Establishing Environmental Thresholds
 
