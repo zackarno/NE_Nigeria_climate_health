@@ -1,4 +1,4 @@
-load_nga_admins <- function(path="data/nga_gis"){
+load_nga_admins <- function(path="data/nga_gis", quiet=T){
   admin_file_names <- c("nga_admbnda_adm1_osgof_20190417",
                         "nga_admbnda_adm2_osgof_20190417",
                         "nga_admbnda_adm3_osgof_eha_20190417")
@@ -6,7 +6,7 @@ load_nga_admins <- function(path="data/nga_gis"){
   
   
   map(admin_file_names,
-      ~sf::st_read(here::here(path),.x)) %>% 
+      ~sf::st_read(here::here(path),.x,quiet=quiet)) %>% 
     set_names(admin_levels)
   
   
