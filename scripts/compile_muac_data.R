@@ -1,5 +1,5 @@
 library(tidyverse)
-
+library(sf)
 # compile nutrition sector data from jan 2017 to november 2019 and save to rds.
 # no real cleaning done here
 # could update once November/December 2021 data is available
@@ -8,6 +8,12 @@ library(tidyverse)
 
 write_output <- c(T,F)[2]
 
+admins <-  load_nga_admins()
+ward <- admins$ward
+
+# wards of interest
+woi <- ward %>% 
+  filter(ADM2_EN %in% c("Maiduguri","Jere"))
 
 
 muac_2017_2019 <- readxl::read_excel(here::here("data/NIS_Nutrition_2017_to_2019.xlsx"))
@@ -210,6 +216,32 @@ wards_partial_clean %>%
       TRUE~NA_character_
     )
   ) %>% 
-  select(State,LGA,Ward,site_name,HQ_ward_guess=HQ_ward_guess2,HQ_LGA_guess) %>% 
+  select(State,LGA,Ward,site_name,HQ_ward_guess=HQ_ward_guess2,HQ_LGA_guess) #%>% 
   filter(is.na(HQ_ward_guess)) %>% 
   count(Ward)
+  
+  
+ward_harm <- readxl::read_excel(here::here("data/20220121_muac_maidu_jere_ward_harmonizer_from_nga_team.xlsx"),"name_harmonizer")
+
+ward_dictionary <- ward_harm %>%
+  filter(!is.na(ward_correction),(is.na(LGA_correction)|LGA_correction %in% c("Maiduguri","Jere"))) %>% 
+  mutate(
+    LGA_crct= if_else(is.na(LGA_correction),LGA,LGA_correction)
+  ) %>% 
+  unite(col ="admin_key", c(State,LGA,Ward),sep = "_",) %>% 
+  select(admin_key,LGA_crct,ward_crct=ward_correction)
+
+ward_key <- ward_dictionary$ward_crct %>% 
+  set_names(ward_dictionary$admin_key)
+
+lga_key <- ward_dictionary$LGA_crct %>% 
+  set_names(ward_dictionary$admin_key)
+
+muac_cleaned_wards_harmonized <- muac_cleaned %>% 
+  unite(col ="admin_key", c(State,LGA,Ward),sep = "_",remove = F) %>% 
+  mutate(
+    ward_crct = if_else(admin_key %in% names(ward_key),recode(.x = `admin_key`,!!!ward_key),Ward),
+    LGA_crct = if_else(admin_key %in% names(lga_key),recode(.x = `admin_key`,!!!lga_key),LGA)
+  )
+
+write_rds(muac_cleaned_wards_harmonized,here::here("data/20220121_MUAC_w_maidu_jere_wards_harmonized.rds"))
