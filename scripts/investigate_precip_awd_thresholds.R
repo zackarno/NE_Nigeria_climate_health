@@ -52,7 +52,8 @@ otp_woi <- muac_cleaned %>%
 otp_woi %>% 
   group_by(LGA,Ward) %>% 
   summarise(n=n()) %>% 
-  arrange(desc(n))
+  arrange(desc(n)) %>% 
+  print(n=100)
 
 # AWD ---------------------------------------------------------------------
 
@@ -236,9 +237,7 @@ chirps_daily_long %>%
 chirps_daily_long%>% 
   ggplot(aes(x=date,cumulative_precip))+
   geom_line(color="#abd9e9",lwd=1)+
-  geom_line(data= awd_long_by_wk,
-            aes(x=date,y=value/2),
-            lwd=1,color="#fdae61",alpha=0.75)+
+
  
   labs(y="Yearly cummulative precipitation (mm)")+
   # drawing lines roughly where the rains start each year
@@ -247,12 +246,15 @@ chirps_daily_long%>%
   # geom_vline(xintercept=lubridate::ymd("2019-05-01"))+
   # geom_vline(xintercept=lubridate::ymd("2020-05-01"))+
   # geom_vline(xintercept=lubridate::ymd("2021-05-01"))+
-  geom_vline(xintercept=lubridate::ymd("2017-07-09"),color="#f46d43",lwd=1)+
-  geom_vline(xintercept=lubridate::ymd("2018-07-15"),color="#f46d43",lwd=1)+
-  geom_vline(xintercept=lubridate::ymd("2019-06-30"),color="#f46d43",lwd=1)+
-  geom_vline(xintercept=lubridate::ymd("2020-07-19"),color="#f46d43",lwd=1)+
+  geom_vline(xintercept=lubridate::ymd("2017-07-09"),color="#f46d43",lwd=0.7,alpha= 0.5)+
+  geom_vline(xintercept=lubridate::ymd("2018-07-15"),color="#f46d43",lwd=0.7,alpha= 0.5)+
+  geom_vline(xintercept=lubridate::ymd("2019-06-30"),color="#f46d43",lwd=0.7,alpha= 0.5)+
+  geom_vline(xintercept=lubridate::ymd("2020-07-19"),color="#f46d43",lwd=0.7,alpha= 0.5)+
   # geom_vline(xintercept=lubridate::ymd("2020-08-30"),)+
-  geom_vline(xintercept=lubridate::ymd("2021-07-11"),color="#f46d43",lwd=1)+
+  geom_vline(xintercept=lubridate::ymd("2021-07-11"),color="#f46d43",lwd=0.7,alpha= 0.5)+
+  geom_line(data= awd_long_by_wk,
+            aes(x=date,y=value/2),
+            lwd=1,color="#fdae61",alpha=0.75)+
   geom_hline(yintercept=127,color="#4575b4",lwd=1, linetype="dashed")+
   geom_hline(yintercept=184,color="#4575b4",lwd=1, linetype="dashed")+
   # geom_vline(xintercept=lubridate::ymd("2021-08-29"))+
@@ -282,7 +284,7 @@ chirps_daily_long%>%
     x = lubridate::ymd("2015-10-01"), y = 200, size = 3, colour = "#4575b4"
   )
   
-# ggsave(filename = "cumm_precip_vs_awd_cases.png",width = 8, height = 4, device = "png")
+ggsave(filename = "cumm_precip_vs_awd_cases.png",width = 8, height = 4, device = "png")
 
 # 1.) plot soil moisture params
 # 2.) plot NDVI params
@@ -292,11 +294,81 @@ chirps_daily_long%>%
 # linked map and graph of precip
 # water sheds?
 # JRC water change in mj
+
+# smap ---------------------------------------------------------------------
+
+
 library(xts)
 library(tidyverse)
 library(dygraphs)
 smap <- read_rds(file = here::here("data/SMAP_soil_moisture_3day_maidu_jere.rds"))
 
+
+smap %>% 
+  ggplot(aes(x= date, y= value,color=parameter))+
+  geom_line()+
+  geom_line(data=chirps_daily_long)
+  
+  
+smap_chirps_long <- bind_rows(chirps_daily_long %>% ungroup() %>% 
+  select(-cumulative_precip,-yr),
+  smap,awd_long_by_wk %>% 
+    select(-yr_wk)
+    )
+
+smap_wide<- smap %>% pivot_wider(names_from = parameter,values_from = value)
+smap_wide<- smap_chirps_long %>% pivot_wider(names_from = parameter,values_from = value)
+# smap_wide %>% 
+#   filter(across(everything(), ~ !is.na(.))) 
+
+smap_wide_filt <- smap_wide %>% 
+  select(date,precip,ssm,susm,awd_cases) %>% 
+  mutate(awd_cases=awd_cases/100) %>% 
+  filter(date>="2016-01-01")
+smap_xts<-xts(smap_wide_filt,order.by =  smap_wide_filt$date)
+
+smap_plot<-dygraph(smap_xts) %>% 
+  dySeries("precip", label = "precip", axis=('y'),color="#74add1") %>%
+  dySeries("ssm", label = "surface moisture" ,axis=('y'),color="#a6d96a") %>% 
+  dySeries("susm", label = "sub-surface moisture", axis=('y'),color="#8c510a")  %>% 
+  dySeries("awd_cases", label = "awd_cases", axis=('y'),color="red")  %>% 
+
+  dyRangeSelector(dateWindow = c(min(smap_xts$date),
+                                 max(smap_xts$date))) %>% 
+  dyOptions(connectSeparatedPoints = TRUE)
+
+smap_plot
+
+
+# food prices -------------------------------------------------------------
+
+
+food <- read_csv(here::here("data/WFP_2022Jan20_Nigeria_FoodPricesData.csv")) %>% 
+  janitor::clean_names() 
+
+# trying to see if i should eliminate retail or wholesale
+food %>% 
+  filter(year>=2017) %>% 
+  group_by(commodity, price_type) %>% 
+  summarise(total_records= n()) %>%
+  print(n=nrow(.))
+
+food_filt1 <- food %>% 
+  filter(year>=2017) %>% 
+  group_by(commodity, price_type) %>% 
+  mutate(
+    total_records= n(),
+  ) %>% 
+  ungroup() %>% 
+  filter(total_records>=46) %>% 
+  mutate(
+    date= paste0(year,"-",month,"-01")
+  )
+  
+
+food %>% 
+  filter(price_type=="Retail")
+  
 
 smap %>% 
   ggplot(aes(x= date, y= value,color=parameter))+
