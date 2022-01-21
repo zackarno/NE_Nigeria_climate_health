@@ -1,0 +1,380 @@
+---
+title: "ARIMA Timeseries"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r libraries}
+library(tidyverse)
+library(sf)
+library(xts)
+# devtools::load_all()
+invisible(purrr::map(list.files(here::here("R"),full.names = T),.f = source))
+
+```
+
+
+<!-- https://www.youtube.com/watch?v=uzshNjQbQV8 -->
+1.) stationary
+  + no trend - constant mean and variance.
+  + covariance is independent of time.
+  + if we randomly select two periods of time the mean will be the same.
+2.) Seasonality
+  + Any predictable fluctuation or pattern that repeats over 1-yr period
+3.) Autocorrelation
+  + vector is correlated with itself (i.e the vector could be correlated with its lag value)
+  
+ARMA vs ARIMA
+extension of ARMA
+
+uses the lag in 1 vector to forecast
+Dependent var y is based on multiple lags of same variable (ARMA)
+
+ARIMA has 3 parameters: p,q,d
+- **AR** (p) : **Auto Regression**: # of autoregresseive terms
+- **I**  (d):  **Differencing**: # of non seasonal differences integrated
+- **MA** (q) : **Moving Average** : # of lagged forecast error in eq (MA)
+
+Normal regression: y = a + bX+e
+ARIMA is univariate: 
+
+y= a+b(yt-1)+e
+
+in MA we take the lag values of error values
+
+
+ARMA does not remove satationarity - no differnecing
+when using ARIMA we need to convert non-stationary data to stationary
+
+
+
+
+## Stationarity
+
+
+
+```{r data}
+awd <- load_awd()
+chirps_daily_long <- read_rds(here::here("data/chirps_daily_maidu_jere_diss_gte2016.rds"))
+# combine maiduguri and jere into one
+awd <- awd %>% 
+  mutate(
+  date= lubridate::ymd(date),
+  cases= as.numeric(cases)
+  ) %>% 
+  group_by(date) %>% 
+  summarise(
+    value=sum(cases,na.rm=T),.groups = "drop"
+  ) %>% 
+  mutate(
+    yr_wk=paste0(lubridate::year(date),"_",lubridate::week(date)),
+    parameter="awd_cases"
+  )
+
+awd <- awd %>% 
+  mutate(
+    value_diff1 = value - lag(value),
+    pct_change  = (value- lag(value))/lag(value)
+  )
+
+
+awd_xts <- xts(x = awd[,"value"],order.by = awd$date)
+awd2 <- awd %>% filter(!is.na(pct_change))
+awd_xts2 <- xts(x = awd2$pct_change,order.by = awd2$date)
+
+chirps_daily_ts <-  xts(chirps_daily_long$value,order.by = chirps_daily_long$date)
+```
+
+
+
+# Auto-correlation plot
+```{r}
+library(tseries)
+library(lubridate)
+library(glue)
+library(forecast)
+acf(awd_xts)
+pacf(awd_xts)
+acf(awd_xts2)
+pacf(awd_xts2)
+
+
+```
+### Augmented Dickey Fuller Test
+
+```{r}
+adf.test(awd_xts)
+res2 <- adf.test(awd_xts2)
+res2
+```
+
+### Auto- ARIMA
+Get best model
+```{r}
+
+forecast::tsdisplay(awd_xts)
+forecast::tsdisplay(chirps_daily_ts)
+cm <- read_rds(here::here("data/monthly_precip_aggs.rds"))
+cm_monthly <- cm$lga %>% 
+  filter(ADM2_EN %in% c("Maiduguri","Jere")) %>% 
+  group_by(date) %>% 
+  summarise(
+    value= mean(value,na.rm=T)
+  ) %>% 
+  filter(date>="2017-01-01")
+
+
+cm_monthly$date %>% range()
+chirps_monthly_ts <-  ts(cm_monthly$value,frequency = 12)
+plot(chirps_daily_ts)
+
+avg_model_chirps_monthly <- forecast::Arima(chirps_monthly_ts,c(0,0,0))
+avg_model_chirps_monthly_forecast <-  forecast::forecast(avg_model_chirps_monthly)
+plot(avg_model_chirps_monthly_forecast)
+
+
+auto_model_chirps_monthly <- auto.arima(chirps_monthly_ts)
+auto_model_chirps_monthly_forecast <-  forecast::forecast(auto_model_chirps_monthly)
+plot(auto_model_chirps_monthly_forecast)
+
+
+awd_weekly_ts <-  ts(awd$value,frequency = 52)
+auto_model_awd_weekly <- auto.arima(awd_weekly_ts, ic="aic")
+auto_model_awd_weekly_forecast <-  forecast::forecast(auto_model_awd_weekly)
+autoplot(auto_model_awd_weekly_forecast)
+
+
+awd_weekly_xts <-  xts(awd$value,order.by = awd$date)
+auto_model_awd_weekly <- auto.arima(awd_weekly_ts, ic="aic")
+auto_model_awd_weekly_forecast <-  forecast::forecast(auto_model_awd_weekly)
+autoplot(auto_model_awd_weekly_forecast)
+
+
+
+
+
+
+
+
+awdmodel <- auto.arima(awd_xts,ic = "aic",trace = TRUE)
+awdmodel2 <- auto.arima(awd_xts2,ic = "aic",trace = TRUE)
+
+awdmodel
+
+
+```
+
+## Auto-correlation on residuals
+```{r}
+
+acf(ts(awdmodel$residuals))
+pacf(ts(awdmodel$residuals))
+acf(ts(awdmodel2$residuals))
+pacf(ts(awdmodel2$residuals))
+
+```
+
+##
+
+
+```{r}
+
+awd_f =  forecast(awdmodel,level=c(95),h=2*52)
+awd_f =  forecast(awdmodel2,level=c(95),h=2*52)
+plot(awd_f)
+
+```
+
+```{r time_tk}
+
+awd <- load_awd()
+
+awd_chirps <- bind_rows(awd,chirps_daily_long %>% ungroup()) %>% 
+  select(date, parameter, value)
+
+
+
+awd_chirps2 <- bind_rows(
+  awd2 %>% 
+    select(date,parameter, value=pct_change),
+  chirps_daily_long %>%
+    ungroup() %>% 
+    mutate(
+      #pct change not so good when 0s
+      value= value-lag(value)
+    ) %>% 
+    filter(!is.na(value))
+  ) %>% 
+  select(date, parameter, value)
+awd_chirps %>% 
+  timetk::plot_time_series(.date_var = date,.value = value,.facet_vars = parameter)
+awd_chirps2 %>% filter(parameter=="precip")
+awd_chirps2 %>% 
+  timetk::plot_time_series(.date_var = date,.value = value,.facet_vars = parameter)
+
+awd_chirps %>% count(parameter)
+awd_chirps %>%
+  group_by(parameter) %>% 
+  timetk::plot_acf_diagnostics(.date_var = date,
+                       .value = value,
+                       .show_white_noise_bars = T)
+awd_chirps2 %>%
+  group_by(parameter) %>% 
+  timetk::plot_acf_diagnostics(.date_var = date,
+                       .value = value,
+                       .show_white_noise_bars = T)
+
+
+scale_it <-  function(x){
+  (x-mean(x,na.rm=T))/sd(x,na.rm = T)
+}
+
+awd_chirps <- awd_chirps %>%
+  group_by(parameter) %>% 
+  mutate(
+    value_scale = scale_it(value)
+  ) %>% 
+  ungroup()
+
+awd_chirps %>% 
+  select(date, parameter, value_scale) %>% 
+  pivot_wider(names_from= parameter,values_from = value_scale) %>% 
+  timetk::plot_acf_diagnostics(.date_var = date,
+                       .value =awd_cases ,
+                       .ccf_vars = precip,
+                       .show_ccf_vars_only = T)
+
+```
+
+
+
+```{r}
+awd %>% 
+  group_by(yr=lubridate::year(date)) %>% 
+  count()
+awd <-  awd %>% 
+  mutate(uid=row_number())
+awd_ts <- ts(awd$value, start=min(awd$uid),end=max(awd$uid),frequency = 52)
+class(awd_ts)
+library(forecast)
+plot(awd_ts)
+ plot(awd_xts)
+
+
+```
+
+https://www.youtube.com/watch?v=dKDgihvtZGk
+
+```{r}
+
+
+
+
+awd_chirps <- bind_rows(chirps_daily_long,awd)
+awd_chirps %>% 
+  group_by(parameter) %>% 
+  summarise(
+    min_date= min(date),
+    max_date= max(date),
+  )
+
+awd_chirps_gte2017 <- awd_chirps %>% 
+  ungroup() %>% 
+  filter(date>="2017-01-08",date<="2021-09-19")
+
+awd_chirps_gte2017_long <- awd_chirps_gte2017 %>% 
+  mutate(
+    wk=lubridate::week(date),
+    # mo= lubridate::month(date),
+    yr = lubridate::year(date)
+  ) %>%
+  group_by(
+    parameter,yr,wk
+  ) %>% 
+  summarise(
+    value= sum(value,na.rm=T), .groups="drop"
+  ) 
+
+
+awd_chirps_gte2017_wide <- awd_chirps_gte2017_long %>% 
+  pivot_wider(names_from=parameter, values_from = value) %>% 
+  arrange(yr,wk)
+
+rain.ts = ts(awd_chirps_gte2017_wide$precip,
+             start = min(awd_chirps_gte2017_wide$wk),
+             end = max(awd_chirps_gte2017_wide$wk), frequency=52
+             )
+awd_chirps_gte2017_wide %>% 
+  filter(is.na(awd_cases))
+awd_chirps_gte2017_wide <- awd_chirps_gte2017_wide %>% 
+  mutate(
+    awd_cases= replace_na(awd_cases,0),
+    awd_cases_sq = awd_cases^2
+  )
+
+awd.ts <- ts(awd_chirps_gte2017_wide$awd_cases,
+             start = min(awd_chirps_gte2017_wide$wk),
+             end = max(awd_chirps_gte2017_wide$wk),
+             frequency = 52)
+
+# error at ccf point in there.
+# debugonce(astsa::lag2.plot)
+
+windows();astsa::lag2.plot(rain.ts,awd.ts,52,max.lag = 20)
+
+awd_chirps_gte2017_wide2 <- awd_chirps_gte2017_wide %>% 
+  mutate(
+    awd_diff = awd_cases-lag(awd_cases)
+    # awd_diff = (awd_cases-lag(awd_cases))/lag(awd_cases)
+    
+    ) %>% 
+  filter(!is.na(awd_diff))
+# awd_chirps_gte2017_wide2 <- awd_chirps_gte2017_wide %>% 
+#   filter(yr!=2017 & wk!=2)
+awd_chirps_gte2017_wide2 %>% 
+  ggplot(aes(x=awd_cases, y= precip))+
+  geom_point()+
+  scale_x_log10()
+awd_chirps_gte2017_wide2 %>% 
+  ggplot(aes(x=precip))+
+  geom_histogram()+
+  scale_x_log10()
+
+
+awd.ts2 <- ts(awd_chirps_gte2017_wide2$awd_diff,
+             start = min(awd_chirps_gte2017_wide2$wk),
+             end = max(awd_chirps_gte2017_wide2$wk),
+             frequency = 52)
+
+rain.ts2 = ts(awd_chirps_gte2017_wide2$precip,
+             start = min(awd_chirps_gte2017_wide2$wk),
+             end = max(awd_chirps_gte2017_wide2$wk), frequency=52
+             )
+
+windows();astsa::lag2.plot(rain.ts2,
+                           awd.ts2,
+                           52,
+                           max.lag = 20)
+
+
+
+ck <- awd_chirps_gte2017 %>% 
+  group_by(parameter,yr= lubridate::year(date),mo=lubridate::month(date)) %>% 
+  summarise(value=sum(value),.groups="drop") %>% 
+  mutate(date= lubridate::ymd(glue("{yr}-{mo}-01"))) %>% 
+  select(date,parameter,value) %>% 
+  pivot_wider(names_from = parameter, values_from = value) 
+ck %>% 
+  ggplot(aes(x=date,y=awd_cases))+
+  geom_line()+
+  geom_line(data=ck, aes(x=date,y= precip*10))
+
+ck %>% 
+  ggplot(aes(x=precip, y= awd_cases))+
+  geom_point()+
+  scale_y_log10()
+```

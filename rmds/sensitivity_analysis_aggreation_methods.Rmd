@@ -1,0 +1,56 @@
+---
+title: "Sensitivity Analysis of Aggregation Methods"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Intro
+
+How we aggregate climate data makes a difference. How much difference does it make? This may not be a straight forward question. Sometimes it might make sense to aggregate in different ways depending on the region and the indicator of interest.
+
+I have no answer but have copied an example below which may be developed further to bring light to the discussion
+
+
+# Example 1
+Data Sources:
+- `cm$lga` Aggregated monthly level rainfall (sum of rainfall over month) aggregated to LGA
+- `chirps_daily_long`: Daily rainfall extracted to dissolved Jere & Maiduguri LGAs
+
+If I aggregate these two data sets to be conceptually the same do I get the same values? Not exactly, but pretty close (close enough?).
+
+Is there a way to do sensitivity analysis to better understand impact of aggregation methods
+
+```{r cars}
+
+library(lubridate)
+library(glue)
+library(dplyr)
+
+
+chirps_daily_long <- read_rds(here::here("data/chirps_daily_maidu_jere_diss_gte2016.rds"))
+cm <- read_rds(here::here("data/monthly_precip_aggs.rds"))
+
+
+cm$lga %>% 
+  filter(ADM2_EN %in% c("Maiduguri","Jere")) %>% 
+  group_by(date) %>% 
+  summarise(
+    value= mean(value,na.rm=T)
+  ) %>% 
+  filter(date>"2017-01-01")
+
+chirps_daily_long %>% 
+  group_by(yr=year(date), mo=month(date)) %>% 
+  summarise(
+    value= sum(value),.groups = "drop"
+  ) %>% 
+  mutate(
+    date= ymd(glue("{yr}-{mo}-01"))
+    
+  ) %>% 
+  filter(date>"2017-01-01")
+```
+
