@@ -142,15 +142,49 @@ auto_model_chirps_monthly_forecast <-  forecast::forecast(auto_model_chirps_mont
 plot(auto_model_chirps_monthly_forecast)
 
 
+# try with daily
+chirps_daily_long %>% 
+  group_by(year(date)) %>% 
+  count()
+
+chirps_daily_ts <-  ts(chirps_daily_long$value,frequency = 365)
+plot(chirps_daily_ts)
+
+
+auto_model_chirps_daily <- auto.arima(chirps_daily_ts,seasonal = T,ic = "aic")
+auto_model_chirps_daily_forecast <-  forecast::forecast(auto_model_chirps_daily)
+plot(auto_model_chirps_daily_forecast)
+
+
+
+
+
+
+
+
+# favourite one so far
 awd_weekly_ts <-  ts(awd$value,frequency = 52)
 auto_model_awd_weekly <- auto.arima(awd_weekly_ts, ic="aic")
 auto_model_awd_weekly_forecast <-  forecast::forecast(auto_model_awd_weekly)
 autoplot(auto_model_awd_weekly_forecast)
 
 
-awd_weekly_xts <-  xts(awd$value,order.by = awd$date)
-auto_model_awd_weekly <- auto.arima(awd_weekly_ts, ic="aic")
+
+
+# Does not really work on xts obs
+awd_weekly_xts <-  xts(awd$value,order.by = awd$date,frequency = 52)
+auto_model_awd_weekly <- auto.arima(awd_weekly_xts)
 auto_model_awd_weekly_forecast <-  forecast::forecast(auto_model_awd_weekly)
+autoplot(auto_model_awd_weekly_forecast)
+
+
+
+
+
+
+awd_weekly_xts <-  xts(awd$value,order.by = awd$date)
+auto_model_awd_weekly <- auto.arima(awd_weekly_ts,seasonal=F)
+ auto_model_awd_weekly_forecast <-  forecast::forecast(auto_model_awd_weekly)
 autoplot(auto_model_awd_weekly_forecast)
 
 
@@ -296,13 +330,31 @@ awd_chirps_gte2017_long <- awd_chirps_gte2017 %>%
     parameter,yr,wk
   ) %>% 
   summarise(
-    value= sum(value,na.rm=T), .groups="drop"
-  ) 
+    value= sum(value,na.rm=T),
+    num_dry_days= sum(value==0,na.rm=T), .groups="drop"
+  )
+
+awd_chirps_gte2017_long2 <- bind_rows(
+awd_chirps_gte2017_long %>% 
+  filter(parameter=="precip") %>% 
+  select(-parameter) %>% 
+  pivot_longer(c("value","num_dry_days"),names_to = "parameter") ,
+awd_chirps_gte2017_long %>% 
+  select(-num_dry_days) %>% 
+  filter(parameter=="awd_cases")
+) %>% 
+  arrange(yr,wk)
+
 
 
 awd_chirps_gte2017_wide <- awd_chirps_gte2017_long %>% 
+  select(-num_dry_days) %>% 
   pivot_wider(names_from=parameter, values_from = value) %>% 
   arrange(yr,wk)
+awd_chirps_gte2017_wide2 <- awd_chirps_gte2017_long2 %>% 
+  pivot_wider(names_from=parameter, values_from = value) %>% 
+  arrange(yr,wk)
+
 
 rain.ts = ts(awd_chirps_gte2017_wide$precip,
              start = min(awd_chirps_gte2017_wide$wk),
@@ -335,14 +387,20 @@ awd_chirps_gte2017_wide2 <- awd_chirps_gte2017_wide %>%
   filter(!is.na(awd_diff))
 # awd_chirps_gte2017_wide2 <- awd_chirps_gte2017_wide %>% 
 #   filter(yr!=2017 & wk!=2)
-awd_chirps_gte2017_wide2 %>% 
+awd_chirps_gte2017_wide %>% 
   ggplot(aes(x=awd_cases, y= precip))+
   geom_point()+
   scale_x_log10()
+
 awd_chirps_gte2017_wide2 %>% 
   ggplot(aes(x=precip))+
   geom_histogram()+
   scale_x_log10()
+awd_chirps_gte2017_wide2 <- awd_chirps_gte2017_wide2 %>% 
+  mutate(
+    wt_wk=if_else(precip>0,1,0)
+  )
+lm(formula = awd_cases~precip+wt_wk,data = awd_chirps_gte2017_wide2) %>% summary()
 
 
 awd.ts2 <- ts(awd_chirps_gte2017_wide2$awd_diff,
@@ -378,3 +436,131 @@ ck %>%
   geom_point()+
   scale_y_log10()
 ```
+
+i want to try to build in some other rainfall indicators
+```{r}
+
+
+chirps_daily_long %>% 
+  ggplot(aes(x= value))+
+  geom_histogram()+
+  scale_x_log10(labels=scales::label_number())
+chirps_weekly_long <- chirps_daily_long %>% 
+  mutate(
+    yr= year(date),
+    mo= month(date),
+    wk= week(date)
+  ) %>% 
+  group_by(yr,wk) %>% 
+  summarise(
+    precip = sum(value,na.rm=T),
+    num_dry_days= sum(value>=3), .groups = "drop"
+  ) %>% 
+  pivot_longer(precip:num_dry_days,names_to = "parameter")
+chirps_weekly_long %>% print(n=20)
+awd_weekly_long <- awd %>% 
+  mutate(
+    yr= year(date),
+    wk= week(date)
+    
+  ) %>% 
+  select(yr, wk, parameter,value)
+awd_chirps_weekly <- bind_rows(chirps_weekly_long,awd_weekly_long)
+
+
+awd_chirps_weekly %>% 
+  group_by(parameter) %>% 
+  summarise(
+    min_yr_wk= glue("{min(yr)}-{min(wk)}"),
+    max_yr_wk= glue("{max(yr)}-{max(wk)}")
+  )
+  
+awd_chirps_gte2017_filt <- awd_chirps_weekly %>% 
+  ungroup() %>% 
+  filter(yr>=2017)
+
+awd_chirps_gte2017_filt_wide<- awd_chirps_gte2017_filt %>% 
+  pivot_wider(names_from=parameter, values_from = value) 
+
+
+
+
+
+awd_chirps_gte2017_filt_wide %>%
+  ggplot(aes(x=precip, y=awd_cases))+
+  geom_point()+
+  geom_smooth(method="lm")
+
+awd_chirps_gte2017_filt_wide %>%
+  ggplot(aes(x=precip, y=awd_cases, color=factor(yr)))+
+  geom_point()+
+  geom_smooth(method = "lm")
+
+
+# precip vs rain
+m1 <- lm(awd_cases~precip, data=awd_chirps_gte2017_filt_wide)
+summary(m1)
+# precip vs rain just 2020
+m2 <- lm(awd_cases~precip, data=awd_chirps_gte2017_filt_wide %>% filter(yr==2020))
+summary(m2)
+# precip vs rain + dry days - just 2020
+m3 <- lm(awd_cases~precip+num_dry_days, data=awd_chirps_gte2017_filt_wide %>% filter(yr==2020))
+summary(m3)$adj.r.squared
+
+# precip vs rain + year
+m4 <- lm(awd_cases~precip+yr, data=awd_chirps_gte2017_filt_wide )
+summary(m4)
+
+
+
+model_lags<- function(df, param, lag_interval,yoi){
+  df_lagged <- df %>% 
+    mutate(
+      lag_val= lag(!!sym(param)+num_dry_days,n=lag_interval)
+    ) %>% 
+    filter(!is.na(!!sym(param)))
+  m <-  lm(lag_val~precip+num_dry_days,data=df_lagged %>% filter(yr==yoi))
+  m_lag_summary <- summary(m)
+
+  m_lag_summary$adj.r.squared
+
+}
+
+# debugonce(model_lags)
+lag_sequence <- c(0,1,2,3,4,5,6,7,8,9,10)
+
+
+lag_sequence %>% 
+  map(~model_lags(df=awd_chirps_gte2017_filt_wide,
+                  param = "awd_cases",
+                  lag_interval = .x,yoi=2019)) %>% 
+  unlist() %>% 
+  data.frame() %>%
+  mutate(
+    lag_interval=row_number()-1
+  ) %>% 
+  ggplot(aes(x=lag_interval,y= .))+geom_line()+labs(x="lag",y="adj.r2")
+
+
+awd_chirps_gte2017_filt_wide %>% 
+  ggplot(aes(x=wk,y=precip))+
+  geom_line()+
+  geom_line(data=awd_chirps_gte2017_filt_wide, aes(x= wk, y= awd_cases/25), color="firebrick")+
+  geom_point(data=awd_chirps_gte2017_filt_wide, aes(x= wk, y= awd_cases/25), color="firebrick")+
+  scale_y_continuous(sec.axis = sec_axis(trans = ~.x*50,name = "awd cases"))+
+  facet_wrap(~yr)
+
+m3<-lm(awd_cases_lag^2~precip,data = awd_chirps_gte2017_filt_lags %>%
+          filter(yr==2020)) 
+summary(m3)
+
+mck<-lm(awd_cases_lag~precip,data = awd_chirps_gte2017_filt_lag1 %>%
+          filter(yr==2020)) %>% summary()
+
+
+
+c(0,)
+
+
+```
+
