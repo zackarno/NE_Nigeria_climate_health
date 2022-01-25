@@ -25,20 +25,24 @@ load_awd <- function(path = "data/Borno_EWARS_awd_under5_2017_2021.xlsx",
     left_join(ne_lgas |> select(ADM1_EN,ADM2_EN)) |> 
     select(ADM1_EN,ADM2_EN,everything())
   
+  # add year-wk - double checked there is only 1 week collected per year per location
+  awd_long <- awd_long %>%
+    mutate(
+      yr_wk=paste0(lubridate::year(date),"_",lubridate::week(date))
+    )
+  
   if(!is.null(lgas)){
     
     awd_long <- awd_long %>% 
       filter(ADM2_EN %in% lgas)
     
-    # add year-wk - double checked there is only 1 week collected per year per location
-    awd_long <- awd_long %>%
-      mutate(
-        yr_wk=paste0(lubridate::year(date),"_",lubridate::week(date))
-      )
+
     
     
 
   }
+  
+  return(awd_long)
   
     
   
