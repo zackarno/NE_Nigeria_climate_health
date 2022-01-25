@@ -1,5 +1,5 @@
 ---
-title: "NE Nigeria AWD, Malnutrition and Climate"
+title: "North East Nigeria AWD, Malnutrition and Climate"
 output: 
   bookdown::html_document2:
     toc: true
@@ -10,15 +10,60 @@ output:
     # css: !expr here::here("hnap_style.css")
     highlight: pygments
     code_folding: hide
+    theme:
+      bg: "#FFFFFF"
+      fg: "#1E1E1E"
+      primary: "#ee5859"
+      secondary: "#58c6ee"
+# runtime: shiny
+
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+
+
+# thematic::thematic_rmd()
+# thematic::thematic_shiny()
+# thematic::thematic_on(
+#   bg = "#F4F4E2",
+#   fg = "#4c4c4c",
+#   accent = "#741336",
+#   # font = font_spec("Special Elite", scale = 0.5),
+#   # qualitative = paletteer::paletteer_d("dutchmasters::milkmaid"),
+#   # sequential = sequential_gradient(0.5, 0.75)
+# )
+# bslib::bs_themer()
+
+
+```
+
+
+```{r,message=F,warning=F}
+# libs/functions
+library(sf)
+library(tidyverse)
+library(dygraphs)
+library(xts)
+library(lubridate)
+library(glue)
+library(thematic)
+invisible(purrr::map(list.files(here::here("R"),full.names = T),.f = source))
+
+# "cleaned" data
+awd <- invisible(load_awd(lgas = NULL))
+monthly_precip_aggs <- read_rds(here::here("data/monthly_precip_aggs.rds"))
+smap <- read_rds(file = here::here("data/SMAP_soil_moisture_3day_maidu_jere.rds"))
+
+ndvi <- read_rds(here::here("data/monthly_ndvi_stats_2016_2021.rds"))
+otp <-  read_rds(here::here("data/20220121_MUAC_w_maidu_jere_wards_harmonized.rds"))
+
+
 ```
 
 # Intro
 
-This page is meant to illustrate research progress and preliminary findings. Full code can be found on the [GitHub repository](https://github.com/zackarno/NE_Nigeria_climate_health)
+This page is meant to illustrate research progress and preliminary findings. Full code can be found on the [GitHub repository](https://github.com/zackarno/NE_Nigeria_climate_health). This page contains visualizations, code, and some comments/questions. You can view the code by clicking on the blue `code` buttons. 
 
 
 # Objective & Motivation
@@ -32,39 +77,660 @@ This page is meant to illustrate research progress and preliminary findings. Ful
 
 ## Acute Watery Diarhhea (AWD)
 
-Data cleaning code can bein found in Appendix (section: \@ref(slug))
+- The AWD case-load data was only obtained for Borno State.
+- Time interval: weekly
+- Data cleaning code can be found in Appendix (section: \@ref(awdCleaning))
 
-- Total cases per LGA 
-  + due to lack of data only Jere and Maiduguri were selected for further. See further justifcation (awd vs precip - lga level)
 
-```{r cars}
-summary(cars)
+Figure \@ref(fig:awdLGA-plot) shows that the majority of AWD case-load data is located in Maiduguri and Jere LGAs.  
+
+```{r awdLGA-plot, fig.cap="Total AWD cases by LGA"}
+
+
+plot_awd_by_lga <- awd |> 
+  group_by(ADM2_EN) |> 
+  summarise(
+    cases_per_lga= sum(as.numeric(cases)),.groups = "drop"
+  ) |> 
+  mutate(
+    pct_cases= cases_per_lga/sum(cases_per_lga)
+  ) |> 
+  ggplot(aes(x=reorder(ADM2_EN,cases_per_lga),y=cases_per_lga))+
+  geom_bar(stat="identity")+ 
+  labs(x="LGA",y="Recorded Cases")+
+  coord_flip()
+
+
+plot_awd_by_lga
 ```
+
+
 
 ## Malnutrition (OTP)
 
-Data sets obtained from *[Nutrition Cluster 5Ws](https://www.humanitarianresponse.info/en/operations/nigeria/nutrition/documents/document-type/3w-4w)* .  Data sets were compiled and cleaned for analysis (For compilation/cleaning details see Appendix section \@ref(malnutritionCleaning))
+- Source: *[Nutrition Cluster 5Ws](https://www.humanitarianresponse.info/en/operations/nigeria/nutrition/documents/document-type/3w-4w)* . 
+- Time interval : monthly
+- Cleaning/manipulation: See Appendix (Section: \@ref(malnutritionCleaning)).
 
+```{r}
+
+# a little extra cleaning required
+otp_cleaned <- otp |> 
+  select(date=date_dt, State, LGA=LGA_crct,Ward=ward_crct,new_otp_admissions,muac_total_screened) |> 
+  # a little additional cleaning. 
+  # assume if there are records for muac screenings then facility was open and NA for OTP admissions = 0
+  mutate(new_otp_admissions=if_else(!is.na(muac_total_screened),replace_na(new_otp_admissions,0),new_otp_admissions)) |> 
+  filter(!is.na(date)) |> 
+  filter(date>"2010-01-01") # weird outlier removal
+
+
+```
 
 ## Remote Sensing variables
+
+Variables of interest were:
 
 - Precipitation
 - NDVI
 - Soil Moisture
 
+Details regarding the code to aggregate/extract the data using `GEE` & `rgee` can be found in the Appendix (Section: \@ref(climateDataExtraction))
+
+
+
+# Temporal View
+
+
+## OTP & AWD Cases Over Time
+
+Figure \@ref(fig:otpState-plot) show OTP admissions by State. We can see many more records present in Borno State.
+
+```{r otpState-plot, fig.cap="New OTP admissions over time by State (NE NGA)"}
+
+otp_by_state <- otp_cleaned|> 
+  group_by(State,date,.drop=F ) |> 
+  summarise(
+    cases=sum(new_otp_admissions,na.rm=T),.groups = "drop"
+  ) 
+plot_otp_by_state <- otp_by_state |> 
+  ggplot(aes(x=date,y=cases,color=State,group=State))+
+  geom_line()+
+    scale_y_continuous(labels = scales::comma)+
+  scale_x_date(
+    # minor_breaks = "months", 
+    breaks= "1 month",
+    # major="year",
+    labels=scales::date_format("%b%y")
+    )+
+  labs(x= "date", title= "Monthly OTP Caseload by State (NE Nigeria)")+
+  theme_bw()+
+  theme(
+    axis.text.x = element_text(angle=90),
+    axis.title.x = element_blank()
+  )
+
+
+plot_otp_by_state
+
+
+```
+
+
+
+
+
+In Figure \@ref(fig:awdOtpBorno-plot) we plot both AWD and OTP admissions in Borno together over time. They appear to be related. This relationship is further explored in Figure \@ref(fig:awdVsOtpBorno-plot)   
+
+```{r awdOtpBorno-plot, fig.cap="OTP & AWD cases in Borno state over time"}
+awd_monthly <- awd |> 
+  mutate(cases=as.numeric(cases)) |> 
+  group_by(yr=year(date),mo=month(date)) |> 
+  summarise(cases=sum(cases),.groups="drop") |> 
+  mutate(
+    date= glue("{yr}{mo}") |> ym()
+  )
+
+
+awd_otp_joined <- awd_monthly |> 
+  rename(awd_caseload="cases") |> 
+  left_join(
+    otp_by_state |> 
+      filter(State=="Borno") |> 
+      rename(otp_caseload = "cases"), by="date"
+)
+
+awd_otp_long <- awd_otp_joined |> 
+  select(date, State, awd_caseload,otp_caseload) |> 
+  pivot_longer(awd_caseload:otp_caseload)
+
+plot_awd_otp_monthly_borno <- awd_otp_long |> 
+  ggplot(aes(x=date, y= value, color= name, fill= name, group=name))+
+  geom_line()+
+    scale_y_continuous(labels = scales::comma)+
+  scale_x_date(
+    # minor_breaks = "months", 
+    breaks= "1 month",
+    # major="year",
+    labels=scales::date_format("%b%y")
+    )+
+  labs(x= "date", title= "Borno: New OTP & AWD cases")+
+  theme_bw()+
+  theme(
+    axis.text.x = element_text(angle=90),
+    axis.title.x = element_blank()
+  )
+
+
+plot_awd_otp_monthly_borno
+```
+
+
+
+
+
+## Precip & Soil Moisture Over Time
+
+Figure \@ref(fig:tsWaterAWD-plot) displays AWD cases, soil moisture, and precipitation all plotted over time. Note that AWD cases have been divided by 100 for convenience so that 1 y-axis could be fit to the graph.
+
+
+```{r tsWaterAWD-plot,fig.cap= "Precipitation, Soil Moisture, and AWD cases over time. Dynamic plot, double click to re-set time scale"}
+
+
+
+
+awd_long_mj <- awd %>% 
+  filter(ADM2_EN %in% c("Maiduguri","Jere"))
+
+# add year-wk - double checked there is only 1 week collected per year per location
+awd_long_mj <- awd_long_mj %>%
+  mutate(
+    yr_wk=paste0(lubridate::year(date),"_",lubridate::week(date))
+  )
+
+awd_long_by_wk <- awd_long_mj %>% 
+  mutate(
+    date= lubridate::ymd(date),
+    cases= as.numeric(cases)
+  ) %>% 
+  group_by(date) %>% 
+  summarise(
+    value=sum(cases,na.rm=T),.groups = "drop"
+  ) %>% 
+  mutate(
+    yr_wk=paste0(lubridate::year(date),"_",lubridate::week(date)),
+    parameter="awd_cases"
+  )
+chirps_daily_long <- read_rds(here::here("data/chirps_daily_maidu_jere_diss_gte2016.rds"))
+chirps_daily_long <- chirps_daily_long %>% 
+  group_by(yr=lubridate::year(date)) %>% 
+  mutate(
+    cumulative_precip=cumsum(value)
+  ) %>% 
+  ungroup()
+  
+smap_chirps_awd_long <- bind_rows(chirps_daily_long %>% ungroup() %>% 
+  select(-cumulative_precip,-yr),
+  smap,awd_long_by_wk %>% 
+    select(-yr_wk)
+    )
+
+
+smap_chirps_awd_wide<- smap_chirps_awd_long %>% pivot_wider(names_from = parameter,values_from = value)
+
+dat_wide_filt <- smap_chirps_awd_wide %>% 
+  select(date,precip,ssm,susm,awd_cases) %>% 
+  mutate(awd_cases=awd_cases/100) %>% 
+  filter(date>="2016-01-01")
+
+dat_xts<-xts(dat_wide_filt,order.by =  dat_wide_filt$date)
+
+precip_awd_dygraph<-dygraph(dat_xts) %>% 
+  dySeries("precip", label = "precip", axis=('y'),color="#74add1") %>%
+  dySeries("ssm", label = "surface moisture" ,axis=('y'),color="#a6d96a") %>% 
+  dySeries("susm", label = "sub-surface moisture", axis=('y'),color="#8c510a")  %>% 
+  dySeries("awd_cases", label = "awd_cases", axis=('y'),color="red")  %>% 
+
+  dyRangeSelector(dateWindow = c(min(dat_xts$date),
+                                 max(dat_xts$date))) %>% 
+  dyOptions(connectSeparatedPoints = TRUE)
+
+
+precip_awd_dygraph
+
+```
+
+
+
+
+```{r,eval=F}
+
+
+
+
+borno_lga_precip_gte2017 <- monthly_precip_aggs$lga |> 
+  filter(ADM2_EN %in% borno_lga_names) |> 
+  filter(date>="2017-01-01")
+
+
+awd_monthly_lga_cases <- awd_long |> 
+  group_by(ADM1_EN,ADM2_EN, floor_dt) |> 
+  summarise(
+    cases= sum(cases, na.rm=T)
+  )
+
+awd_monthly_lga_cases |> count()
+awd_monthly_lga_cases |> filter(n==0)
+awd_monthly_lga_cases |> filter(cases==0)
+
+
+
+plot3_awd_precip_lga_facet <- borno_lga_precip_gte2017 |> 
+  ggplot(aes(x=date, value))+
+  geom_path( color="#94CCDC")+
+  geom_path(data=awd_monthly_lga_cases, aes(x=floor_dt, y=cases/10), color="#F49595")+
+  scale_x_date(
+    # breaks= "1 month",
+    # major="year", 
+    minor="months",
+    # labels=scales::date_format("%b")
+    )+
+  scale_y_continuous(sec.axis = sec_axis(trans = ~.x*10,name = "AWD Caseload"))+
+  facet_wrap(~ADM2_EN)+
+  labs(x= "Date",
+       y="Precipitation (mm)",
+       title = "Monthly LGA AWD caseload & Precipitation (CHIRPS)",
+       subtitle = "Borno State")+
+  theme_bw()+
+  theme(
+    axis.text.x = element_text(angle = 90)
+  )
+
+plot3_awd_precip_lga_facet
+
+```
+
+## NDVI Over Time
+
+- NDVI exhibits seasonal pattern (Figure \@ref(fig:monthlyNDVIParams-plot), top).
+- In addition to extracting NDVI values we have also extracted the monthly difference & Z-Score compared to the 10 year (2000-2010) monthly average.
+- There could be arguments for using either Absolute values as well as relative values. The best choice will likely depend on the parameter, the scale, and the details of the research question:
+  + **Relative Index Argument**:Strength of adaptive strategies might be more interesting to analyze under the "departure from normal" framework. People who are adapted to where they live - it is only the significant deviation from normal that should affect them
+  + **Absolut Index Argument**: There are absolute environmental thresholds. Once thresholds are crossed, the effects can snowball (i.e once the temperature hits x degrees y crop can no longer survive)
+
+
+```{r monthlyNDVIParams-plot, fig.cap="Monthly NDVI and comparison to monthly 10-year (2000-2010) average (MODIS 16-day composites)" }
+
+ndvi_mj_summarised <- ndvi$lga |> 
+  filter(ADM2_EN %in% c("Maiduguri","Jere")) |> 
+  group_by(date, category) |> 
+  summarise(
+    value= mean(value),.groups="drop"
+  )
+  
+
+
+plot_modisNDVIParams <- ndvi_mj_summarised |> 
+  mutate(
+    category=fct_relevel(category, "NDVI","diff_NDVI","z_NDVI"),
+    category_label = recode(category,"diff_NDVI"="Difference from 10 year average  (2000-2010)",
+                            "z_NDVI"="Z Score derived from 10 year record (2000-2010)",
+                            "NDVI"="NDVI"
+                               )
+  ) |> 
+  ggplot(aes(x= date, y= value))+
+  geom_line()+
+  scale_x_date(
+    date_breaks = "1 month", date_labels =  "%m-%Y"
+    )+
+  geom_hline(yintercept=0, color="red")+
+  facet_wrap(~category_label,nrow=3,scales = "free_y")+
+  theme(
+    axis.text.x = element_text(angle=90)
+  )
+
+
+plot_modisNDVIParams
+
+```
+
 
 
 # Relationship Mapping
 
-## Time Series Plot
-adsfda
+## Precip + AWD Thresholds
 
-## Correlations
-- AWD vs OTP caseload
-- Precipitaiton with soil moisture and AWD
+- The below graph (Figure \@ref(fig:precipAWDThreshold-plot)) displays a first attempt to map out environmental thresholds which result in a human impact. In Figure \@ref(fig:precipAWDThreshold-plot) a clear pattern emerges in which the start of the rainy season coincides with the initial and most prominent peak in AWD cases.We can see that this peak  consistently occurs within a tight band of cumulative yearly rainfall, between 127 & 186 mm.
+- While the regression/time series modeling development (further down) is still in early phases, I think that this thresholding approach has potential to yield very practical findings and should definitely be explored further after some more model development.
 
-## ARIMA
-asfdad
+```{r precipAWDThreshold-plot, fig.cap="Yearly cummulative precipitation (light blue, left axis) and AWD cases (orange). There is clear AWD case-load peak aft the start of precipitation each year. This AWD peak consistently appears in a narrow band of cumulative precipitation (between 127 & 186 mm)"}
+
+
+# chirps_daily_long <- chirps_daily_long %>% 
+#   group_by(yr=lubridate::year(date)) %>% 
+#   mutate(
+#     cumulative_precip=cumsum(value)
+#   ) 
+
+yrly_max_case_weeks <- awd_long_by_wk %>% 
+  group_by(yr=lubridate::year(date)) %>%
+  slice_max(order_by =value, n = 1 ) %>% 
+  # filter(value==max(value)) %>% 
+  mutate( 
+    yrmo = paste0(yr,"_",lubridate::month(date))
+  )
+awd_first_peaks <- awd_long_by_wk %>% 
+  filter(
+    date %in%c(yrly_max_case_weeks$date[1:3],
+               "2020-07-19",
+               "2021-07-11")
+  )
+
+plot_threshold_precip_awd <- chirps_daily_long%>% 
+  ggplot(aes(x=date,cumulative_precip))+
+  geom_line(color="#abd9e9",lwd=1)+
+  geom_line(data= awd_long_by_wk,
+            aes(x=date,y=value/2),
+            lwd=1,color="#fdae61",alpha=0.75)+
+ 
+  labs(y="Yearly cumulative precipitation (mm)")+
+  # drawing lines roughly where the rains start each year
+  # geom_vline(xintercept=lubridate::ymd("2017-05-01"))+
+  # geom_vline(xintercept=lubridate::ymd("2018-04-01"))+
+  # geom_vline(xintercept=lubridate::ymd("2019-05-01"))+
+  # geom_vline(xintercept=lubridate::ymd("2020-05-01"))+
+  # geom_vline(xintercept=lubridate::ymd("2021-05-01"))+
+  geom_vline(xintercept=lubridate::ymd("2017-07-09"),color="#f46d43",lwd=1)+
+  geom_vline(xintercept=lubridate::ymd("2018-07-15"),color="#f46d43",lwd=1)+
+  geom_vline(xintercept=lubridate::ymd("2019-06-30"),color="#f46d43",lwd=1)+
+  geom_vline(xintercept=lubridate::ymd("2020-07-19"),color="#f46d43",lwd=1)+
+  # geom_vline(xintercept=lubridate::ymd("2020-08-30"),)+
+  geom_vline(xintercept=lubridate::ymd("2021-07-11"),color="#f46d43",lwd=1)+
+  geom_hline(yintercept=127,color="#4575b4",lwd=1, linetype="dashed")+
+  geom_hline(yintercept=184,color="#4575b4",lwd=1, linetype="dashed")+
+  # geom_vline(xintercept=lubridate::ymd("2021-08-29"))+
+  geom_point(data=awd_first_peaks, aes(x= date, y= value/2),fill="#fdae61", size= 2,pch=21)+
+  
+  # seems like cases are spiking between 70-300 mm of rain accumulation/
+  # first half of the rainy season
+  scale_y_continuous(
+    sec.axis= sec_axis(trans = ~.x*2,name = "AWD Cases")
+  )+
+  scale_x_date(
+    minor_breaks = "1 month",
+    breaks= "1 month",
+    # major="year",
+    labels=scales::date_format("%b%y")
+  )+
+  theme_bw()+
+  theme(
+    axis.text.x = element_text(angle=90,size = 6)
+  )+
+  annotate(
+    "text", label = "127 mm",
+    x = lubridate::ymd("2015-10-01"), y = 115, size = 3, colour = "#4575b4"
+  )+
+  annotate(
+    "text", label = "186 mm",
+    x = lubridate::ymd("2015-10-01"), y = 200, size = 3, colour = "#4575b4"
+  )
+
+
+
+plot_threshold_precip_awd
+```
+
+
+## AWD vs OTP
+```{r awdVsOtpBorno-plot, fig.cap= "Scatter plot with trendline showing relation between AWD and OTP case-load in Borno State"}
+plot_awd_vs_otp <- awd_otp_joined |> 
+  ggplot(aes(x=awd_caseload, y=otp_caseload))+
+  geom_point(alpha=0.3)+
+  labs(x= "AWD Cases", y="New OTP Admissions",title = "AWD vs OTP case-load in Borno State")+
+  geom_smooth(stat="smooth",method = "lm",formula = "y~x")+
+  theme_bw()
+
+
+plot_awd_vs_otp
+
+
+```
+
+
+## AWD vs precip
+
+- several time scales worth investigating
+- Let's start with most granular available -  **weekly** (AWD is weekly)
+  + precipitation is aggregated to weekly for comparison (sum total avg rainfall for each week)
+
+```{r}
+
+
+
+chirps_weekly <- chirps_daily_long %>% 
+  mutate(
+    yr= year(date),
+    mo= month(date),
+    wk= week(date)
+  ) %>% 
+  group_by(yr,wk,.drop = F) %>% 
+  summarise(
+    precip = sum(value,na.rm=T),
+    num_dry_days= sum(value>=3), .groups = "drop"
+  ) %>% 
+  pivot_longer(precip:num_dry_days,names_to = "parameter")
+
+
+
+awd_weekly_mj_summarised <- awd_long_mj %>% 
+  group_by(date= ymd(date) ) |> 
+  summarise(
+    cases= sum(as.numeric(cases),na.rm=T),.groups="drop"
+  ) |> 
+  mutate(
+    date= ymd(date),
+    yr= year(date),
+    wk= week(date),
+    parameter="awd_cases",
+    value= as.numeric(cases)
+    
+  ) %>% 
+  select(date,yr, wk, parameter,value)
+
+
+awd_chirps_weekly <- bind_rows(chirps_weekly,awd_weekly_mj_summarised)
+
+
+# this is not quite right for max value of awd since there are some NAs at the end
+# awd_chirps_weekly %>% 
+#   group_by(parameter) %>% 
+#   summarise(
+#     min_yr_wk= glue("{min(yr)}-{min(wk)}"),
+#     max_yr_wk= glue("{max(yr)}-{max(wk)}")
+#   )
+  
+awd_chirps_gte2017_filt <- awd_chirps_weekly %>% 
+  ungroup() %>% 
+  filter(yr>=2017) 
+
+awd_chirps_gte2017_filt_wide<- awd_chirps_gte2017_filt %>% 
+  pivot_wider(id_cols = c("yr","wk"),names_from=parameter, values_from = value) 
+```
+
+
+- As a first step let's explore the relationship between AWD and precipitation (Figure \@ref(fig:precipAWDWeekly-plot))
+  + There is a weak positive relationship evident
+  
+
+
+```{r precipAWDWeekly-plot, fig.cap="Scatter plot with line of best fit - precip vs AWD case-load"}
+
+
+plot_precip_awd_weekly <- awd_chirps_gte2017_filt_wide |> 
+  filter(!is.na(awd_cases)) |> 
+  ggplot(aes(x=precip, y=awd_cases))+
+  geom_point()+
+  geom_smooth(method="lm", formula="y~x")
+
+plot_precip_awd_weekly
+```
+
+- Additional investigation shows that the trend-line (particularly the y-intercept) is highly influenced by the year (Figure \@ref(fig:precipAWDWeeklyYr-plot))
+
+```{r precipAWDWeeklyYr-plot, fig.cap="Scatter plot - precip vs AWD caseload colored by year"}
+
+plot_precip_awd_weekly_yrTrends <- awd_chirps_gte2017_filt_wide |> 
+  filter(!is.na(awd_cases)) |> 
+  ggplot(aes(x=precip, y=awd_cases, color=factor(yr)))+
+  scale_color_discrete(name="Year")+
+  geom_point()+
+  geom_smooth(method = "lm", formula="y~x")
+
+
+plot_precip_awd_weekly_yrTrends
+```
+
+- The strong apparent relationships warrant further investigation. 
+- Lets look into regression options
+  <!-- + linear regression assumes data are distributed normally - that ain't normal -->
+
+
+
+```{r, eval=F}
+
+
+
+chirps_weekly %>% 
+  filter(parameter=="precip") |> 
+  filter(value>0) |> 
+  ggplot(aes(x= value))+
+  geom_histogram(bins = 50)+
+  # scale_x_sqrt(labels=scales::label_number())+
+  scale_x_log10(labels=scales::label_number())+
+  # scale_y_log10(labels=scales::label_number())+
+  labs(x="Histogram of daily rainfall values")
+
+
+monthly_precip_mj <- monthly_precip_aggs$lga |> 
+  filter(ADM2_EN %in% c("Borno","Jere")) |> 
+  group_by(date) |> 
+  summarise(
+    value= mean(value)
+  )
+
+monthly_precip_mj |> 
+  # filter(value>0) |> 
+  filter(date>="2016-01-01") |> 
+  ggplot(aes(x=value))+
+  geom_histogram()#+
+  # scale_x_log10(label=scales::number_bytes)
+
+```
+
+
+Assumptions:
+
+- Linearity
+- Normality of residuals
+- homogeneity if residual var
+- indep of residual errors
+
+From Figure \@ref(fig:precipAWDWeeklyYr-plot) we can see that the relationship between AWD & precipitation varies from year to year. From Figure \@ref(fig:precipAWDWeeklyYr-plot) we can also see the general trends and approximate fit of each year Therefore, to get started, lets just do a create a simple model for one year. Randomly, I have chosen the year 2020. Below is the model summary as well as the residual model diagnostic plots.
+
+- Here we revisit the 2020 precipitation-AWD trend this time with residuals highlighted (Figure \@ref(fig:precipAWD2020Residuals-plot)).
+
+
+
+```{r precipAWD2020Residuals-plot, fig.cap="Precipitation & AWD cases (2020) with trendline and residuals highlighted"}
+
+# make a couple simple models to explore later
+m1 <- lm(awd_cases~precip, data=awd_chirps_gte2017_filt_wide)
+
+m2 <- lm(awd_cases~precip, data=awd_chirps_gte2017_filt_wide |> filter(yr==2020))
+m3 <- lm(awd_cases~precip+yr, data=awd_chirps_gte2017_filt_wide )
+m4 <- lm(log10(awd_cases)~log(precip+1), data=awd_chirps_gte2017_filt_wide |> filter(yr==2020))
+m2a <- broom::augment(m2)
+
+
+
+plot_awd_precip_2020_w_residuals <- 
+  m2a |> 
+  ggplot(aes(x=precip,y=awd_cases))+
+  geom_point()+
+  stat_smooth(method="lm",se=F, formula="y~x")+
+  geom_segment(aes(xend=precip,yend=.fitted),color="red", size= 0.3)
+
+
+
+plot_awd_precip_2020_w_residuals 
+
+```
+
+- Print out of linear model summary (Table: \@ref(tab:m2Summary-table))
+
+```{r m2Summary-table}
+m2_summary_table <- summary(m2) |> 
+  gtsummary::tbl_regression() |>
+  # gtsummary::add_glance_table() |>
+  gtsummary::add_glance_source_note() |> 
+  gtsummary::modify_caption(caption = "Model summary")
+  
+
+
+m2_summary_table
+
+```
+
+- Further, we can look at some model diagnostic plots (Figure\@ref(fig:m2ResidDiags-plot))
+- It is clear that there is a relationship embedded inte data. However, the simple linear regression as constructed is violating some linear regression rules/assumptions. Therefore these estimates are not reliable. There are several steps we can try to 
+  + data transformations - data sets should be normally distributed. Can try some transforms to better approach normal.
+  + changing temporal aggregation level - this can change distribution of data in univariate and bivariate space which will also change the residual error terms.
+  + adding variables to MLR - this can change multivariate space and re-distribute residual errors. In doing so auto correlation issues can be fixed.
+  + ARIMA & GLM techniques to account for auto-correlation through time.
+
+```{r m2ResidDiags-plot, fig.cap="Residual diagnostic plots - Precipitation vs AWD (2020)"}
+
+par(mfrow=c(2,2))
+plot(m2 )
+
+```
+
+
+## AWD vs Soil Moisture
+
+- Explore relationship here
+
+## AWD vs NDVI
+
+## AWD Multiple Linear Regression (MLR)
+
+## Auto-regressive Integrated Moving Average (ARIMA) Model
+
+Here I have just started to explore ARIMA technique. It seems that ARIMA models are typically used for univariate predictions. Therefore, to best understand the utility we need to seek additional details regarding research objectives.
+
+- Below is an example of where an ARIMA model is "auto-fit" (`auto.arima`) for AWD case-load predictions 
+  + provide further description of `auto.arima` and 6 
+- Should figure out if the predicted values can be constrained to 0 and above
+
+```{r arima1, message=F,warning=F}
+
+
+# https://otexts.com/fpp2/arima-r.html  - good explanation of auto.arima
+# set up ts class object. Weekly data so Freq = 52
+awd_weekly_ts <-  ts(awd_weekly_mj_summarised$value,frequency = 52)
+
+# use auto arima to select model with best aic
+auto_model_awd_weekly <- forecast::auto.arima(awd_weekly_ts, ic="aic")
+
+#forecast
+auto_model_awd_weekly_forecast <-  forecast::forecast(auto_model_awd_weekly)
+
+# plot forecasted data
+forecast::autoplot(auto_model_awd_weekly_forecast)+
+  labs(x="Time (years)", y="AWD Cases" ,title="Forecasts with ARIMA model (0,1,3)(1,1,0)[52]")+
+  theme_bw()
+
+
+```
 
 
 # Future Work/ Questions
@@ -77,14 +743,26 @@ asfdad
 
 # Appendix
 
-## Extraction of climatic data
-Below code illustrates how climatic data was downloaded and aggregated from Google Earth Engine using the `rgee` package 
+## Extraction of climatic data {#climateDataExtraction}
+Below code is the code which uses using the `rgee` package to extract the data from Google Earth Engine.
+
+```{r}
+
+# will copy code here
+
+```
 
 ## Data Cleaning 
 
 
-### AWD Data Cleaning  {#slug}
-asdkfadslf
+### AWD Data Cleaning  {#awdCleaning}
+
+Data cleaning for AWD data set
+
+```{r}
+# will copy code here
+
+```
 
 ### Malnutrition Data Cleaning {#malnutritionCleaning}
 
@@ -341,10 +1019,3 @@ write_rds(muac_cleaned_wards_harmonized,here::here("data/20220121_MUAC_w_maidu_j
 
 
 ```
-
-
-```{r pressure, echo=FALSE}
-plot(pressure)
-```
-
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
