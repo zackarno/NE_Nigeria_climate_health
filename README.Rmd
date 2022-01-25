@@ -122,7 +122,7 @@ precip_awd_dygraph<-dygraph(dat_xts) %>%
   + AWD cases/100
   
   
-<img src="README_files/figure-gfm/awd_cases_precip_moisture.html" />
+<!-- <img src="README_files/figure-gfm/awd_cases_precip_moisture.html" /> -->
 ```{r, results='markup'}
 
 htmltools::tags$iframe(
