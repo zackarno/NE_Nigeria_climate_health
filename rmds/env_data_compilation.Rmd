@@ -18,6 +18,7 @@ library(sf)
 invisible(purrr::map(list.files(here::here("R"),full.names = T),.f = source))
 ```
 
+<<<<<<< HEAD
 Now that we have a better understanding of data and limitations it makes sense to re-think how the data is extracted from GEE. Once it is extracted it should be cleanly compiled into several long format data.frames which can be stored as a list and saved as an `rds` file.
 
 - OTP data 
@@ -29,6 +30,8 @@ Now that we have a better understanding of data and limitations it makes sense t
   
 
   
+=======
+>>>>>>> 4d4e9f153e2551e51d6d70cbf048e43c3084d607
 ## Data
 
 
