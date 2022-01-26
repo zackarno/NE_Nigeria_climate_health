@@ -61,6 +61,45 @@ otp <-  read_rds(here::here("data/20220121_MUAC_w_maidu_jere_wards_harmonized.rd
 
 ```
 
+
+
+
+```{r}
+# chunk to explore ACLED data, can remove once i know what to use
+
+library(leaflet)
+acled <- read_csv(here::here("data/2015-01-01-2022-02-01--Nigeria_ACLED.csv"))
+acled %>% janitor::tabyl(admin1) %>% arrange(desc(n))
+acled_sf <- st_as_sf(acled, coords=c("longitude","latitude"),crs=4326)
+admins <- load_nga_admins()
+ne_states<- admins$state %>% 
+  filter(ADM1_EN %in% c("Borno","Yobe","Adamawa"))
+
+ne_wards <- admins$ward %>% 
+  filter(ADM1_EN %in% c("Borno","Yobe","Adamawa"))
+acled_ne_j<- st_join(acled_sf, ne_wards)
+acled_ne_j %>% glimpse()
+acled_ne_j <- acled_ne_j %>% 
+  filter(!is.na(ADM1_EN)) 
+
+acled_ne_violent <- acled_ne_j %>% 
+  filter(str_detect(tolower(event_type),"violence|battle")) 
+
+
+acled_ne_violent %>% 
+  count(sub_event_type)
+
+acled_ne_violent %>% glimpse()
+
+acled_ne_simp <- acled_ne_violent %>% 
+  mutate(
+    date= dmy(event_date)
+  ) %>% 
+  select(date, fatalities, event_type,matches("^admin.+|^ADM.+"))
+
+
+```
+
 # Intro
 
 This page is meant to illustrate research progress and preliminary findings. Full code can be found on the [GitHub repository](https://github.com/zackarno/NE_Nigeria_climate_health). This page contains visualizations, code, and some comments/questions. You can view the code by clicking on the blue `code` buttons. 
@@ -698,6 +737,168 @@ plot(m2 )
 ## AWD vs Soil Moisture
 
 - Explore relationship here
+
+```{r}
+
+precip_sm_awd_wide_gte2017<- smap_chirps_awd_long %>% 
+  mutate(
+    yrmo= ym(glue("{year(date)}-{month(date)}"))
+  ) %>% 
+  group_by(yrmo,parameter) %>%
+  summarise(
+    mean_val=mean(value,na.rm=T),
+    sum_val=max(value,na.rm=T),.groups="drop"
+  ) %>% 
+  mutate(value=if_else(parameter %in%c("awd_cases","precip"),sum_val, mean_val)) %>% 
+  select(yrmo, parameter, value) %>% 
+  pivot_wider(names_from = parameter,values_from = value) %>% 
+  filter(yrmo>="2017-01-01")
+precip_sm_awd_wide_gte2017 %>% 
+  group_by(yr=year(yrmo)) %>% 
+  mutate(cumulative_precip = cumsum(precip),
+         deriv1= cumulative_precip-lag(cumulative_precip),
+         deriv2= deriv1-lag(deriv1),
+         col_deriv2 = if_else(is.na(deriv2)|deriv2<0,"red","green"),
+         # deriv3 = c(F,F,diff(diff(cumulative_precip)>0)!=0)
+         cum_cat= case_when(
+           cumulative_precip
+         )
+         ) %>% 
+  ungroup() %>% 
+  ggplot(aes(x=yrmo, y= cumulative_precip, color=col_deriv2, group=cumulative_precip))+
+  geom_line(lwd=2)#+
+  scale_color_continuous("rdBl")
+
+  
+  
+precip_sm_awd_wide_gte2017 <- precip_sm_awd_wide_gte2017 %>% 
+  group_by(yr=year(yrmo)) %>% 
+  mutate(cumulative_precip = cumsum(precip),
+         cum_cat= case_when(
+           cumulative_precip< 120 ~"too little",
+           cumulative_precip< 190 ~"Goldilocks",
+           cumulative_precip> 190 ~"too much",
+           
+         ),
+         lag1 = lag(precip,n = 1),
+         lag2 = lag(precip,n = 2)
+         ) |> 
+  ungroup()
+  
+#############################################
+# Detrending
+#############################################
+
+# by differencing
+precip_sm_awd_wide_gte2017 <- precip_sm_awd_wide_gte2017 |> 
+  mutate(
+    awd_cases_detrend = awd_cases-lag(awd_cases),
+    precip_detrend = precip-lag(precip)
+         ) 
+
+precip_sm_awd_wide_gte2017|> 
+  ggplot(aes(x=yrmo,y=awd_cases_detrend))+
+  geom_line(color="green",lwd=1.2)+
+  geom_line(data=precip_sm_awd_wide_gte2017,aes(x= yrmo, y= awd_cases), 
+            color="orange",lwd=1.2) +
+  theme_bw()
+
+lm(awd_cases~precip+ssm+susm+smp,precip_sm_awd_wide_gte2017) %>% summary()
+lm(awd_cases~precip+yrmo,precip_sm_awd_wide_gte2017) %>% summary()
+lm(awd_cases~sqrt(precip),precip_sm_awd_wide_gte2017) %>% summary()
+lm(awd_cases~sqrt(precip)+yrmo,precip_sm_awd_wide_gte2017) %>% summary()
+lm(awd_cases_detrend~precip,precip_sm_awd_wide_gte2017) %>% summary()
+lm(awd_cases_detrend~precip_detrend,precip_sm_awd_wide_gte2017) %>% summary()
+
+
+ck2 <- lm(sqrt(awd_cases)~sqrt(precip)+yrmo,precip_sm_awd_wide_gte2017) 
+ck2 %>% summary()
+plot(ck2)
+car::avPlots(ck2)
+lm(awd_cases~precip+cum_cat,precip_sm_awd_wide_gte2017) %>% summary()
+lm(awd_cases~precip+cumulative_precip,precip_sm_awd_wide_gte2017) %>% summary()
+lm(awd_cases~precip+lag1,precip_sm_awd_wide_gte2017) %>% summary()
+lm(awd_cases~precip+lag1+lag2,precip_sm_awd_wide_gte2017) %>% summary()
+
+lm(awd_cases~lag1,precip_sm_awd_wide_gte2017) %>% summary()
+lm(awd_cases~lag1+smp,precip_sm_awd_wide_gte2017) %>% summary()
+lm(awd_cases~smp,precip_sm_awd_wide_gte2017) %>% summary()
+lm(awd_cases~susm,precip_sm_awd_wide_gte2017) %>% summary()
+lm(awd_cases~ssm,precip_sm_awd_wide_gte2017) %>% summary()
+ck <- lm(awd_cases~sqrt(precip)+ssm,precip_sm_awd_wide_gte2017) 
+ck %>% summary()
+car::avPlots(ck)
+
+
+rain_monthly.ts<- ts(precip_sm_awd_wide_gte2017 |> 
+                       filter(!is.na(awd_cases)) |> pull(precip),
+                     frequency = 12)
+awd_cases.ts<- ts(precip_sm_awd_wide_gte2017 |> 
+             filter(!is.na(awd_cases)) |> pull(awd_cases),frequency = 12)
+
+astsa::lag2.plot(rain_monthly.ts,awd_cases.ts,52,max.lag = 10,corr=T,smooth=T)
+astsa::lag2.plot(awd_cases.ts,rain_monthly.ts,52,max.lag = 10,corr = T,smooth = T)
+```
+
+## AWD & ACLED
+
+```{r}
+# summarise monthly
+acled_mj_summarised <- acled_ne_simp %>% 
+  st_drop_geometry() |> 
+  filter(ADM2_EN %in% c("Maiduguri","Jere")) |> 
+  mutate(
+    yrmo= ym(glue("{year(date)}-{month(date)}"))
+    ) |> 
+  group_by(ADM1_EN,yrmo) |> 
+  summarise(
+    acled_events= n(), 
+    acled_fatalities = sum(fatalities,na.rm=T),.groups="drop"
+  )
+
+acled_mj_summarised_long <- acled_mj_summarised |>  
+  select(-ADM1_EN) |>   
+  pivot_longer(acled_events:acled_fatalities,names_to = "parameter") |> 
+  rename(date= "yrmo")
+
+smap_chirps_awd_monthly_long <- smap_chirps_awd_long %>% 
+  mutate(
+    yrmo= ym(glue("{year(date)}-{month(date)}"))
+  ) %>% 
+  group_by(yrmo,parameter) %>%
+  summarise(
+    mean_val=mean(value,na.rm=T),
+    sum_val=max(value,na.rm=T),.groups="drop"
+  ) %>% 
+  mutate(value=if_else(parameter %in%c("awd_cases","precip"),sum_val, mean_val)) %>% 
+  select(date=yrmo, parameter, value) 
+
+acled_awd_precip_sm_wide <- bind_rows(smap_chirps_awd_monthly_long,acled_mj_summarised_long) |> 
+  pivot_wider(names_from=parameter, values_from = value) |> 
+  filter(date>="2017-01-01") 
+  
+acled_awd_precip_sm_wide |> 
+  ggplot(aes(x=acled_events,y=acled_fatalities))+
+  geom_point()
+
+acled_awd_precip_sm_wide |> 
+  ggplot(aes(x=acled_fatalities,y=awd_cases))+
+  geom_point()+
+  scale_x_sqrt()
+
+lm(awd_cases~acled_fatalities,acled_awd_precip_sm_wide) |> summary()
+lm(awd_cases~acled_fatalities+date,acled_awd_precip_sm_wide) |> summary()
+lm(awd_cases~precip,acled_awd_precip_sm_wide) |> summary()
+lm(awd_cases~precip+acled_fatalities,acled_awd_precip_sm_wide) |> summary()
+lm(awd_cases~acled_events,acled_awd_precip_sm_wide) |> summary()
+
+
+acled_awd_precip_sm_wide |> 
+  ggplot(aes(x=date,y=awd_cases))+
+  geom_line(color="orange",lwd=1.2)+
+  geom_line(data= acled_awd_precip_sm_wide,aes(x=date,y=acled_fatalities*100),color="red")+
+  scale_y_continuous(sec.axis = sec_axis(~.x/100,name = "Fatalities (ACLED)"),name = "AWD Cases")
+```
 
 ## AWD vs NDVI
 
