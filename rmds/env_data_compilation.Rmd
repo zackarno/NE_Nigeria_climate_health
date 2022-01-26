@@ -1,0 +1,614 @@
+---
+title: "monthly_env_data_wards"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Libraries & functions
+
+
+
+```{r libraries}
+library(tidyverse)
+library(rgee)
+library(sf)
+invisible(purrr::map(list.files(here::here("R"),full.names = T),.f = source))
+```
+
+Now that we have a better understanding of data and limitations it makes sense to re-think how the data is extracted from GEE. Once it is extracted it should be cleanly compiled into several long format data.frames which can be stored as a list and saved as an `rds` file.
+
+- OTP data 
+  + All 3 states: Yobe, Maiduguri, Adamawa at LGA level (still some LGA cleaning required)
+  + No ward level data
+- AWD Data
+  + Just Borno State at LGA & Ward level. Ward data is too dirty to be used for entire state.
+  + Majority of data in Maiduguri & Jere. We have had those wards cleaned to acceptable level
+  
+
+  
+## Data
+
+
+```{r load_data}
+
+ee_Initialize()
+
+# 16 day ndvi composites
+ndvi_dat_src <- "MODIS/006/MOD13Q1"
+ndvi <- ee$ImageCollection(ndvi_dat_src)
+
+# ee_get_date_ic(ndvi)
+
+soil_moisture_src <- "NASA_USDA/HSL/SMAP10KM_soil_moisture"
+soil_moisture <- ee$ImageCollection(soil_moisture_src)
+
+chirps_src <- "UCSB-CHG/CHIRPS/DAILY"
+chirps <- ee$ImageCollection(chirps_src)
+
+# awd <- readxl::read_excel(here::here("data/Borno_EWARS_awd_under5_2017_2021.xlsx")) |> 
+#   rename(ADM2_EN = `...1`)
+
+muac <- read_rds(file = here::here("data/muac_201701_202111.rds"))
+admins <- load_nga_admins()
+
+ward <- admins$ward
+
+# wards of interest
+woi <- ward %>% 
+  filter(ADM2_EN %in% c("Maiduguri","Jere"))
+
+```
+
+
+# get precip
+
+```{r}
+
+monthly_precip <- yr_mo_composite_stat_ic(dat = chirps,
+                                          month_range = c(1,12),
+                                          year_range = c(1981,2021),
+                                          stat = "sum")
+
+
+
+monthly_precip_renamed <- monthly_precip$ 
+  # CHIRPS release is delayed by a month or 2 so you need to pre-filter
+  # or face difficulty later
+  filterDate("1981-01-01","2021-11-30") |> 
+  ee$ImageCollection$map(
+    function(x) {
+      date <- ee$Date(x$get("system:time_start"))$format('YYYY_MM_dd')
+      name <- ee$String$cat("pr_", date)
+      x$select("precipitation")$rename(name)
+    })
+
+
+system.time(
+monthly_precip_ward <- ee_extract(x = monthly_precip_renamed,y=woi["ADM3_PCODE"],scale=5500,fun= ee$Reducer$mean(),sf=T)
+)
+
+monthly_precip_ward_long <- monthly_precip_ward |> 
+       st_drop_geometry() |> 
+  pivot_longer(-1) |> 
+      mutate(
+        parameter="precip",
+        date= str_remove(string = name, pattern = ".*pr_") |> 
+          str_replace_all("_","-") |> lubridate::ymd()
+
+  ) 
+  
+
+
+```
+
+## Soil Moisure
+```{r, eval=F}
+soil_moisture %>% ee_get_date_ic() %>% pull(time_start) %>% range()
+# soil_moisture
+soil_moisture$first()$bandNames()$getInfo()
+soil_moisture$select("ssm")$first() %>% ee_print()
+
+
+monthly_soil_moisture <- yr_mo_composite_stat_ic(dat = soil_moisture$
+                                         select("ssm","susm","smp"),
+
+                                          month_range = c(1,12),
+                                          year_range = c(2015,2021),
+                                          stat = "mean")
+
+
+
+
+
+
+
+monthly_soil_moisture <- monthly_soil_moisture$
+  filterDate("2015-04-02","2022-01-10") 
+
+soil_moisture_3_day <- soil_moisture$
+  filterDate("2015-04-02","2022-01-10") 
+
+monthly_soil_moisture_renamed <- monthly_soil_moisture |> 
+
+  ee$ImageCollection$map(
+    function(x) {
+      date <- ee$Date(x$get("system:time_start"))$format('YYYY_MM_dd')
+      # band_names <- x$bandNames()$getInfo()
+      # band_names_date <- 
+      ssm_date <- ee$String$cat("ssm_", date)
+      susm_date <- ee$String$cat("susm_", date)
+      smp_date <- ee$String$cat("smp_", date)
+      x$rename(ssm_date,susm_date,smp_date)
+      
+    })
+
+
+soil_moisture_3_day_renamed <- soil_moisture_3_day$
+  select("ssm","susm","smp") %>% 
+
+  ee$ImageCollection$map(
+    function(x) {
+      date <- ee$Date(x$get("system:time_start"))$format('YYYY_MM_dd')
+      # band_names <- x$bandNames()$getInfo()
+      # band_names_date <- 
+      ssm_date <- ee$String$cat("ssm_", date)
+      susm_date <- ee$String$cat("susm_", date)
+      smp_date <- ee$String$cat("smp_", date)
+      x$rename(ssm_date,susm_date,smp_date)
+      
+    })
+
+
+
+# should look up if this resolution (12.7 km) should be used rather than the 10 km provided by GEE
+soil_moisture$first()$projection()$nominalScale()$getInfo()
+
+
+woi_diss <-  woi %>% 
+  summarise() %>% 
+  st_simplify(dTolerance =  0.7)
+
+system.time( #24 s
+soil_moisture_3_day_mj <- ee_extract(x = soil_moisture_3_day_renamed,
+                                         y=woi_diss,
+                                         scale=10000,
+                                         fun= ee$Reducer$mean(),
+                                         sf=T)
+)
+
+
+system.time( #24 s
+monthly_soil_moisture_ward <- ee_extract(x = monthly_soil_moisture_renamed,y=woi["ADM3_PCODE"],scale=10000,fun= ee$Reducer$mean(),sf=T)
+)
+
+monthly_soil_moisture_ward_long <- monthly_soil_moisture_ward |> 
+       st_drop_geometry() |> 
+      pivot_longer(-1) |> 
+      mutate(
+        parameter= str_extract(string = name,pattern = "smp|ssm|susm"),
+        date= str_remove(string = name, pattern = ".*sm_|.*mp_") |> 
+          str_replace_all("_","-") |> lubridate::ymd()
+  )
+  
+soil_moisture_3_day_mj_long <- soil_moisture_3_day_mj |> 
+       st_drop_geometry() |> 
+      pivot_longer(-1) |> 
+      mutate(
+        parameter= str_extract(string = name,pattern = "smp|ssm|susm"),
+        date= str_remove(string = name, pattern = ".*sm_|.*mp_") |> 
+          str_replace_all("_","-") |> lubridate::ymd()
+  )
+
+# soil_moisture_3_day_mj_long %>% 
+#     select(date,parameter,value) %>% 
+#   write_rds("SMAP_soil_moisture_3day_maidu_jere.rds")
+
+
+```
+
+## NDVI
+- need to work in VCI
+<!-- https://journals.ametsoc.org/view/journals/clim/23/3/2009jcli2900.1.xml -->
+  + VCI = (NDVI-NDVImin)/(NDVImax-NDVImin)
+  +VHI
+
+```{r}
+
+ndvi_rescaled <- ndvi$
+  select("NDVI")$
+  map(
+    ee_utils_pyfunc(
+      function(x){x$
+          multiply(0.0001)$
+          copyProperties(x,x$propertyNames())
+          }
+    )
+  )
+
+
+
+
+ndvi_rescaled_monthly <- yr_mo_composite_stat_ic(dat =ndvi_rescaled,
+                                                 month_range = c(1,12),
+                                                 year_range = c(2016,2021),
+                                                 stat = "mean")
+
+
+
+ndvi_rescaled_monthly <- ndvi_rescaled_monthly$select("NDVI")
+ndvi_rescaled_monthly %>% ee_print()
+month_sequence <- ee$List$sequence(1,12)
+year_sequence <- ee$List$sequence(2016,2021)
+
+ndvi_rescaled_monthly_historical_mean <- month_sequence$map(
+   ee_utils_pyfunc(
+     function(m) {
+       ndvi_mean <- ndvi_rescaled$filter(ee$Filter$calendarRange(2000, 2010, 'year'))$
+         filter(ee$Filter$calendarRange(m, m, 'month'))$
+         mean()$
+         rename("NDVI_mean")$
+         set("system:time_start", ee$Date$millis(ee$Date$fromYMD(2000,m,1)) )
+       
+       ndvi_std <- ndvi_rescaled$filter(ee$Filter$calendarRange(2000, 2010, 'year'))$
+         filter(ee$Filter$calendarRange(m, m, 'month'))$
+         reduce(ee$Reducer$stdDev())$
+         rename("NDVI_std")$
+         set("system:time_start", ee$Date$millis(ee$Date$fromYMD(2000,m,1)) )
+       
+       
+       ndvi_mean$addBands(ndvi_std)
+     }
+
+)
+)
+
+
+# try simplifying above
+ndvi_rescaled_monthly_historical_mean <- month_sequence$map(
+   ee_utils_pyfunc(
+     function(m) {
+       ndvi_tfilt <- ndvi_rescaled$filter(ee$Filter$calendarRange(2000, 2010, 'year'))$
+         filter(ee$Filter$calendarRange(m, m, 'month'))
+       
+       
+       ndvi_mean <- ndvi_tfilt$
+         mean()$
+         rename("NDVI_mean")$
+         set("system:time_start", ee$Date$millis(ee$Date$fromYMD(2000,m,1)) )
+       
+       ndvi_min <- ndvi_tfilt$
+         min()$
+         rename("NDVI_min")$
+         set("system:time_start", ee$Date$millis(ee$Date$fromYMD(2000,m,1)) )
+       
+       ndvi_max <- ndvi_tfilt$
+         max()$
+         rename("NDVI_max")$
+         set("system:time_start", ee$Date$millis(ee$Date$fromYMD(2000,m,1)) )
+       
+       ndvi_std <-ndvi_tfilt$
+         reduce(ee$Reducer$stdDev())$
+         rename("NDVI_std")$
+         set("system:time_start", ee$Date$millis(ee$Date$fromYMD(2000,m,1)) )
+       
+       
+       
+       ndvi_mean$addBands(ndvi_min)$addBands(ndvi_max)$addBands(ndvi_std)
+     }
+
+)
+)
+
+ndvi_rescaled_monthly_historical_mean <- ee$ImageCollection$fromImages(ndvi_rescaled_monthly_historical_mean$flatten()) 
+
+ndvi_rescaled_monthly_historical_mean %>% ee_print()
+ndvi_rescaled_monthly_historical_mean %>% ee_get_date_ic() %>% pull(time_start) %>% range()
+ndvi_rescaled_monthly %>% ee_get_date_ic() %>% pull(time_start) %>% range()
+
+
+ndvi_rescaled_monthly$first()$bandNames()$getInfo()
+ndvi_rescaled_monthly_historical_mean$first()$bandNames()$getInfo()
+
+
+
+recent_vs_historical_ndvi <- year_sequence$map(
+  ee_utils_pyfunc(
+     function(y) {
+       month_sequence$map(
+         ee_utils_pyfunc(
+           function(m){
+             recent_yrmo<- ee$Image(ndvi_rescaled_monthly$
+              filter(ee$Filter$calendarRange(y, y, 'year'))$
+              filter(ee$Filter$calendarRange(m, m, 'month'))$
+                first()
+             )
+             
+             hist_mo <- ee$Image(ndvi_rescaled_monthly_historical_mean$
+                                   filter(ee$Filter$calendarRange(2000, 2000, 'year'))$
+                                   filter(ee$Filter$calendarRange(m, m, 'month'))$
+                                   first()
+               )
+             
+            
+            historical_min <- hist_mo$select("NDVI_min")
+            historical_max <- hist_mo$select("NDVI_max")
+            
+            NDVI_diff <- recent_yrmo$select("NDVI")$
+              subtract(hist_mo$select("NDVI_mean"))$
+              rename("NDVI_diff")
+            
+            NDVI_z <- NDVI_diff$select("NDVI_diff")$
+              divide(hist_mo$select("NDVI_std"))$
+              rename("NDVI_Z")
+            
+            # max_diff_min <- - historical_max$
+            #   subtract(historical_min)
+            
+            max_diff_min <-  hist_mo$select("NDVI_max")$
+              subtract( hist_mo$select("NDVI_min"))$
+              rename("max_diff_min")
+          
+            NDVI_VCI_diff <- recent_yrmo$select("NDVI")$
+              subtract(hist_mo$select("NDVI_min"))$
+              rename("VCI_NDVI_diff")
+            # 
+            NDVI_VCI <- NDVI_VCI_diff$
+              select("VCI_NDVI_diff")$
+              subtract(max_diff_min$select("max_diff_min"))$
+              rename("VCI_NDVI")
+            
+            recent_yrmo$
+              addBands(NDVI_diff)$
+              addBands(NDVI_z)$
+              addBands(NDVI_VCI)$
+              set("system:time_start",ee$Date$millis(ee$Date$fromYMD(y,m,1)))
+           }
+         )
+       )
+       
+     }
+  
+)
+)
+
+
+
+recent_vs_historical_ndvi_ic <- ee$ImageCollection$fromImages(recent_vs_historical_ndvi$flatten())
+recent_vs_historical_ndvi_ic %>% ee_print()
+recent_vs_historical_ndvi_ic$first()$bandNames()$getInfo()
+
+
+recent_vs_historical_ndvi_ic_renamed <- recent_vs_historical_ndvi_ic |> 
+  ee$ImageCollection$map(
+    function(x) {
+      date <- ee$Date(x$get("system:time_start"))$format('YYYY_MM_dd')
+      # name <- ee$String$cat("pr_", date)
+      # x$select("NDVI")$rename(name)
+      
+      ndvi_bandname <- ee$String$cat("NDVI_", date)
+      diff_ndvi_bandname <- ee$String$cat("diff_NDVI_", date)
+      z_ndvi_bandname <- ee$String$cat("z_NDVI_", date)
+      x$rename(ndvi_bandname,diff_ndvi_bandname,z_ndvi_bandname)
+    }
+  )
+
+
+
+
+system.time( #36 s
+monthly_ndvi_params <- ee_extract(x = recent_vs_historical_ndvi_ic_renamed,
+                           y=woi["ADM3_PCODE"],
+                           scale=250, # dont fogrget to set scale properly
+                           fun= ee$Reducer$mean(),sf=T)
+)
+
+monthly_ndvi_ward_long <- monthly_ndvi_params |> 
+       st_drop_geometry() |> 
+      pivot_longer(-1) |> 
+      mutate(
+        parameter= str_extract(string = name,pattern = "diff_NDVI|_NDVI_|z_NDVI") |> 
+          str_replace_all(pattern = "_NDVI_","NDVI"),
+        date= str_remove(string = name, pattern = ".*NDVI_") |> 
+          str_replace_all("_","-") |> lubridate::ymd()
+  )
+
+admin_dissolved <- admins$state %>% 
+  summarise() %>% 
+  mutate(admin="overall")
+monthly_ndvi_params_overall <- ee_extract(x = recent_vs_historical_ndvi_ic_renamed,
+                           y=admin_dissolved["admin"],
+                           scale=250, # dont fogrget to set scale properly
+                           fun= ee$Reducer$mean(),sf=T)
+
+
+monthly_ndvi_overall_long <- monthly_ndvi_params_overall |> 
+       st_drop_geometry() |> 
+      pivot_longer(-1) |> 
+      mutate(
+        parameter= str_extract(string = name,pattern = "diff_NDVI|_NDVI_|z_NDVI") |> 
+          str_replace_all(pattern = "_NDVI_","NDVI"),
+        date= str_remove(string = name, pattern = ".*NDVI_") |> 
+          str_replace_all("_","-") |> lubridate::ymd()
+  )
+
+
+
+monthly_ndvi_overall_long %>% 
+  filter(parameter!="NDVI") %>% 
+  ggplot(aes(x=date, y= value))+
+   scale_x_date(
+    minor_breaks = "1 month",
+    breaks= "1 year",
+    # major="year",
+    labels=scales::date_format("%b%y")
+  )+
+  # scale_x_date()+
+  geom_line()+
+  geom_vline(xintercept=lubridate::ymd("2016-03-01"),linetype='dashed')+
+  geom_vline(xintercept=lubridate::ymd("2017-03-01"),linetype='dashed')+
+  geom_hline(yintercept=0,color="red")+
+  facet_wrap(~parameter,nrow=2, scales = "free_y")+
+  theme_bw()
+  
+
+
+```
+
+
+## Compile RS ward level
+
+```{r}
+env_params_ward<- list(monthly_precip_ward_long,
+                       monthly_ndvi_ward_long,
+                       monthly_soil_moisture_ward_long) %>% 
+  map_dfr(~.x %>% 
+            select(ADM3_PCODE, value, parameter, date))
+
+
+env_params_ward %>% 
+  count(parameter)
+
+env_params_ward %>% 
+  filter(date>="2016-01-01") %>% 
+  count(parameter)
+
+env_params_ward_gte2016 <- env_params_ward %>% 
+    filter(date>="2016-01-01") 
+
+env_params_ward_gte2016 %>% 
+  count(parameter)
+
+env_params_ward_gte2016_labelled <- env_params_ward_gte2016 %>% 
+  left_join(woi %>% 
+              st_drop_geometry() %>% 
+              select(ADM3_PCODE,ADM3_EN, ADM2_EN,ADM2_PCODE,ADM1_EN)) %>% 
+  select(date,matches("^ADM"), parameter,everything())
+  
+```
+
+
+```{r}
+
+
+env_params_ward_gte2016_labelled %>% 
+  filter(str_detect(parameter,"NDVI")) %>% 
+  filter(parameter %in% c("diff_NDVI","z_NDVI")) %>% 
+  filter(ADM3_EN=="Alau") %>% 
+  ggplot(aes(x= date, y= value))+
+  geom_line()+
+  scale_x_date(
+    minor_breaks = "1 month",
+    breaks= "1 year",
+    # major="year",
+    labels=scales::date_format("%b")
+  )+
+  geom_hline(yintercept=0, color="red")+
+  facet_wrap(~parameter,nrow=3,scales = "free_y")+
+  theme(
+    axis.text.x = element_text(angle=90)
+  )
+
+# 
+# env_params_ward_gte2016_labelled %>% 
+#   write_csv("nga_env_params_by_ward_maidu_jere.csv")
+
+```
+
+
+
+```{r}
+muac_monthly_ward <- muac %>% 
+  group_by(State,LGA,Ward,yr,mo) %>% 
+  summarise(
+    new_otp_admissions = sum(new_otp_admissions,na.rm=T)
+  )
+
+
+# there are some records with LGA missing, but ward present- should recode
+ward_lga_lookup<- admins$ward$ADM2_EN |> 
+  set_names(admins$ward$ADM3_EN)
+
+
+
+muac_cleaned <- muac_monthly_ward %>% 
+  ungroup() %>% 
+  mutate(
+    # across(.cols= matches("^muac_|^new_"), ~replace_na(.x,0)),
+    across(.cols = c("State","LGA","Ward"),~str_to_title(.x)),
+    mo= str_to_title(mo),
+    date= paste0(yr,"-",mo,"-01"),
+    date_dt= lubridate::ymd(date),
+    LGA= str_replace_all(LGA, c("Askira-Uba"="Askira/Uba",
+                                "Postiskum" ="Potiskum" ,
+                                "Gaidam" ="Geidam",
+                                "Tarmuwa" ="Tarmua" )),
+    # fix these na LGAs that have wards
+    LGA = if_else(is.na(LGA),recode(Ward, !!!ward_lga_lookup),LGA)
+    
+    )
+ward %>% 
+  mutate(
+    ward_name= str_to_title(ADM3_EN)
+  ) %>% 
+  filter(str_detect(ward_name,"Gaji"))
+woi %>% 
+  pull(ADM3_EN)
+muac_cleaned %>% 
+  # 7 records of Gajigana in Maiduguri, but admin boundaries say it should be in Magumeri...
+  mutate(
+    LGA2 = if_else(str_detect(Ward,"Gaji"),"Magumeri",LGA)
+  ) %>% 
+  filter(str_detect(Ward,"Gaji"))
+  filter(State=="Borno") %>% 
+  filter(LGA%in% c("Maiduguri","Jere")) %>% 
+  
+  count(Ward) %>% 
+  mutate(
+    ward2= str_to_title(str_squish(Ward)),
+    ward3 = case_when(
+      ward2 %in% c("Bolori Ii",
+                   "Bolori Ii",
+                   "Bolori-Ii",
+                   "Bolori 2",
+                   "Bolori 2a&2c",
+                   "Bolori 2b&D")~"Bolori II",
+      # apparently there is teachers village in both bolori 1 & 2 - did both
+      str_detect(ward2,"^Bolori.*|^Teacher.*|^Pompo.*")~"Bolori I",
+      str_detect(ward2,"^Bulab.+in$|^Bulab.+")~"Bulablin",
+      str_detect(ward2,"^Dala.+")~"Dala",
+      str_detect(ward2,"^Dus[um].+|^Muna_eth.*")~"Dusuma",
+      str_detect(ward2,"^G[ao]mboru.+")~"Gamboru",
+      str_detect(ward2,"^Gomari.*|Gangamari")~"Gomari",
+      ward2 %in% c("Gwange","Gwange I","Gwange 1&2","Gwange-I","Gwnge 1")~"Gwange I",
+      ward2 %in% c("Gwange Ii")~"Gwange II",
+      ward2 %in% c("Gwange Iii","Gwange 3")~"Gwange III",
+      ward2 %in% c("Shehuri","Shehuri North","Shehuru North")~"Shehuri North",
+      str_detect(ward2,"^Shuwari.*|Shok")~"Shehuri North",
+      str_detect(ward2,"^Maisandari.*")~ "Maisandari" ,
+      str_detect(ward2,"^Lam[iu]sula*")~ "Lamisula" ,
+      str_detect(ward2,"^Musari*|Maimusari.*")~ "Maimusari" ,
+      str_detect(ward2,"^Mashamari*")~ "Mashamari" ,
+      
+      #,https://reliefweb.int/sites/reliefweb.int/files/resources/referral_pathway_mmc_jere_final_24.03.17.pdf
+      str_detect(ward2,"^Gw[oa]zar*")~ "Dusuma" ,
+      str_detect(ward2,"^Sabon.*|^Bale.*")~ "Galtimari",
+      # Gajigana  - there is a ward called Gajigana in Magumeri... maybe it should b
+      TRUE~ ward2
+    )
+  ) %>% 
+  count(ward3) %>% 
+  print(n=460)
+  
+```
+
+
+
+
+
+
+
+
+
