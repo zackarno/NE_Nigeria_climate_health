@@ -58,6 +58,10 @@ smap <- read_rds(file = here::here("data/SMAP_soil_moisture_3day_maidu_jere.rds"
 ndvi <- read_rds(here::here("data/monthly_ndvi_stats_2016_2021.rds"))
 otp <-  read_rds(here::here("data/20220121_MUAC_w_maidu_jere_wards_harmonized.rds"))
 
+pop <-  read_csv(here::here("data/pop_lga_msna2019_sf.csv"))
+admins$lga |> 
+  st_drop_geometry() |> 
+  select(matches("^ADM\\d_[PE]"))
 
 ```
 
@@ -795,6 +799,20 @@ precip_sm_awd_wide_gte2017 <- precip_sm_awd_wide_gte2017 |>
     awd_cases_detrend = awd_cases-lag(awd_cases),
     precip_detrend = precip-lag(precip)
          ) 
+# by model fitting
+
+awd_trend_model<-lm(awd_cases~yrmo,precip_sm_awd_wide_gte2017)
+awd_trend_model_preds <- broom::augment(awd_trend_model) 
+
+awd_trend_model_preds |> 
+  # mutate(awd_detrended_from_model= awd_cases-.fitted) |> 
+  ggplot(aes(x=yrmo,y=.fitted))+
+  geom_line()+
+  geom_line(data=awd_trend_model, aes(x=yrmo, y=awd_cases))+
+  geom_line(data=awd_trend_model, aes(x=yrmo, y=.resid))
+
+precip_sm_awd_wide_gte2017 <- precip_sm_awd_wide_gte2017 |> 
+  left_join(awd_trend_model_preds |> select(yrmo,awd_resids= .resid))
 
 precip_sm_awd_wide_gte2017|> 
   ggplot(aes(x=yrmo,y=awd_cases_detrend))+
@@ -809,6 +827,8 @@ lm(awd_cases~sqrt(precip),precip_sm_awd_wide_gte2017) %>% summary()
 lm(awd_cases~sqrt(precip)+yrmo,precip_sm_awd_wide_gte2017) %>% summary()
 lm(awd_cases_detrend~precip,precip_sm_awd_wide_gte2017) %>% summary()
 lm(awd_cases_detrend~precip_detrend,precip_sm_awd_wide_gte2017) %>% summary()
+
+lm(awd_resids~precip,precip_sm_awd_wide_gte2017) %>% summary()
 
 
 ck2 <- lm(sqrt(awd_cases)~sqrt(precip)+yrmo,precip_sm_awd_wide_gte2017) 
