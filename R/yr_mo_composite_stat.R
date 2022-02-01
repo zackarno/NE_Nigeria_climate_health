@@ -89,7 +89,7 @@ fun_sel <-  function(x){switch(x,
 yr_mo_composite_stat_ic2 <- function(dat,
                                     month_range=c(1,12),
                                     year_range=c(2004,2005),
-                                    stat=c("mean","median"),
+                                    stat=c("mean"),
                                     monthly_stat_per = "year"
 ){
   #v2
