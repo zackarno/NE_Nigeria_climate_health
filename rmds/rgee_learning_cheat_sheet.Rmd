@@ -13,9 +13,439 @@ knitr::opts_chunk$set(echo = TRUE)
   + don't think it matters as long as you set the scale properly when using subsequent reducers
 - `
 
-```{r cars}
-summary(cars)
+
+straight from google
+```{r}
+# // Make a date filter to get images in this date range.
+# dateFilter = ee.Filter.date('2014-01-01', '2014-02-01');
+
+# // Load a MODIS collection with EVI data.
+# var mcd43a4 = ee.ImageCollection('MODIS/MCD43A4_006_EVI')
+    # .filter(dateFilter);
+    
+# ndvi with historical bands
+summary_stats_ic_moyID <- summary_stats_ic |> 
+  ee$ImageCollection$map(
+    function(img){
+      moy = ee$Date(img$get('system:time_start'))$getRelative('month','year')
+      img$set("moy",moy)
+    
+  
+    }
+)
+
+# ndvi current bands
+ndvi_gte2016_moyID <- ndvi_gte2016 |> 
+  ee$ImageCollection$map(
+    function(img){
+      moy = ee$Date(img$get('system:time_start'))$getRelative('month','year')
+      img$set("moy",moy)
+    }
+)
+
+
+
+# // Define an inner join.
+innerJoin = ee$Join$inner();
+
+# // Specify an equals filter for image timestamps.
+filterMOYEq <- ee$Filter$equals(leftField = 'moy', rightField = 'moy')
+
+
+# // Apply the join.
+innerJoinedNDVI = innerJoin$apply(ndvi_gte2016_moyID, summary_stats_ic_moyID, filterMOYEq)
+
+# // Display the join result: a FeatureCollection.
+innerJoinedNDVI |> ee_print()
+
+
+# // Map a function to merge the results in the output FeatureCollection.
+joinedMODIS = innerJoinedNDVI$map(function(feature) {
+   ee$Image$cat(feature$get('primary'), feature$get('secondary'));
+})
+
+# // Print the result of merging.
+joinedMODIS |> ee_print()
+joinedMODIS$getInfo()
+
+ee$ImageCollection(joinedMODIS) |> ee_print()
+# damn those google guys are 
 ```
+
+
+# this might be a stupid wrapper 
+```{r}
+ic_combine_bands_by<- function(ic1, ic2, by){
+ 
+# // Define an inner join
+innerJoin = ee$Join$inner()
+
+# // Specify an equals filter for image timestamps.
+filterEq <- ee$Filter$equals(leftField = by, rightField = by)
+
+# // Apply the join.
+innerJoined_ic = innerJoin$apply(ic1, ic2, filterEq)
+
+
+# // Map a function to merge the results in the output FeatureCollection.
+# in the JavaScript code-editor this seems to auto-convert/get coerced to ImageCollection
+joined_fc = innerJoinedNDVI$map(function(feature)  {
+   ee$Image$cat(feature$get('primary'), feature$get('secondary'));
+})
+
+# with rgee is seems necessary to explicitly convert
+ee$ImageCollection(joined_fc) 
+}
+
+
+```
+
+
+straing from cesar
+
+```{r}
+
+# exact example
+col <- ee$ImageCollection('MODIS/006/MOD13A2')$select('NDVI')
+col <- col$map(function(img) {
+  doy <- ee$Date(img$get('system:time_start'))$getRelative('day', 'year')
+  img$set('doy', doy)
+})
+distinctDOY <- col$filterDate('2013-01-01', '2014-01-01')
+
+filter1 <- ee$Filter$equals(leftField = 'doy', rightField = 'doy')
+
+join1 <- ee$Join$saveAll('doy_matches')
+joinCol <- ee$ImageCollection(join1$apply(distinctDOY, col, filter1))
+joinCol |> ee_print()
+
+
+
+col <-summary_stats_ic
+col <- col$map(function(img) {
+  moy <- ee$Date(img$get('system:time_start'))$getRelative('month', 'year')
+  img$set('moy', moy)
+})
+distinctDOY <- ndvi_gte2016
+
+filter1 <- ee$Filter$equals(leftField = 'moy', rightField = 'moy')
+
+join1 <- ee$Join$saveAll('doy_matches')
+joinCol <- ee$ImageCollection(join1$apply(distinctDOY, col, filter1))
+joinCol |> ee_print()
+
+comp <- joinCol$map(function(img) {
+  doyCol = ee$ImageCollection$fromImages(
+    img$get('doy_matches')
+  )
+  # doyCol$reduce(ee$Reducer$median())
+  i= ee$Image(doyCol)
+  attached_i = ee$Image(img$get("NDVI_mean"))
+  i$addBands(attached_i)
+  
+})
+comp |> ee_print()
+comp <- joinCol$map(function(img) {
+  i = ee$Image(img)
+  attached_i = ee$Image(img$get("NDVI_mean"))
+  i$addBands(attached_i)
+})
+comp |> ee_print()
+
+
+
+
+
+
+```
+
+
+
+going to try the `ee$ImageCollection$combine`
+```{r}
+
+# ImageCollection.combin
+
+col <- col$map(function(img) {
+  doy <- ee$Date(img$get('system:time_start'))$getRelative('day', 'year')
+  img$set('doy', doy)
+})
+distinctDOY <- col$filterDate('2013-01-01', '2014-01-01')
+
+ndvi_gte2016 |> ee_print()
+
+ndvi_gte2016_moyID <- ndvi_gte2016 |> 
+  ee$ImageCollection$map(
+    function(img){
+      moy = ee$Date(img$get('system:time_start'))$getRelative('month','year')
+      indexString = ee$Number(moy)$format('%03d')
+      img$set('system:index',indexString)
+    }
+)
+col <- ndvi_gte2016$map(function(img) {
+  doy <- ee$Date(img$get('system:time_start'))$getRelative('month', 'year')
+  img$set('butterJohn', doy)
+})
+
+col$aggregate_array("butterJohn")$getInfo()
+
+
+summary_stats_ic |> ee_print()
+summary_stats_ic_moyID <- summary_stats_ic |> 
+  ee$ImageCollection$map(
+    function(img){
+      moy = ee$Date(img$get('system:time_start'))$getRelative('month','year')
+      indexString = ee$Number(moy)$format('%03d')
+      img2=img$set('system:index',indexString)
+      img2$set("new_prop",moy)
+    
+  
+    }
+)
+
+summary_stats_ic$first()$get('system:index')$getInfo()
+summary_stats_ic_moyID$first()$get('system:index')$getInfo()
+summary_stats_ic$first()$set('system:index',"suckit")$get('system:index')$getInfo()
+
+
+summary_stats_ic_moyID |> ee_print()
+ndvi_gte2016_moyID$aggregate_array("system:index")$getInfo()
+ndvi_gte2016_moyID$aggregate_array("new_prop")$getInfo()
+summary_stats_ic_moyID$aggregate_array("system:index")$getInfo()
+summary_stats_ic$aggregate_array("system:index")$getInfo()
+
+ndvi_gte2016_w_historical_bands<- ndvi_gte2016_moyID$combine(summary_stats_ic_moyID)
+ndvi_gte2016_w_historical_bands |> ee_print()
+
+```
+
+
+```{r cars}
+moyList = ee$List(ndvi_10yr_mean$aggregate_array('moy'))
+
+
+# Map over the list of moys to calculate NDVI differences.
+ndviDifFromMeanList = moyList$map(
+  ee_utils_pyfunc(
+  function(moy){
+  #// Get the 20-year mean NDVI image for the given doy.
+  ndviMean = ndvi_10yr_mean$filter(ee$Filter$eq('moy', moy))$first()
+  #// Get the single-year NDVI image for the given doy.
+  ndviYear = ndvi_gte2016$filter(ee$Filter$eq('moy', moy))$first()
+  #// Calculate the single-year NDVI difference from 20-year mean NDVI.
+  ndviYear$subtract(ndviMean)$
+  #  // Set the doy for the image.
+    set('moy', moy)
+  }
+  )
+)
+
+ee$ImageCollection$fromImages(ndviDifFromMeanList)|> ee_print()
+
+
+ee$Image$normalizedDifference
+
+filter1 <- ee$Filter$equals(leftField = 'moy', rightField = 'moy')
+join1 <- ee$Join$saveAll('moy_matches')
+joinCol <- ee$ImageCollection(join1$apply(ndvi_gte2016, ndvi_10yr_mean, filter1))
+# joinCol <- ee$ImageCollection(join1$apply(ndvi_10yr_mean,ndvi_gte2016, filter1))
+joinCol |> ee_print()
+
+comp <- joinCol$map(function(img) {
+  moyCol = ee$ImageCollection$fromImages(
+    img$get('moy_matches')
+  )
+comp |> ee_print()
+  
+    moyCol
+```
+
+## Some new funcs
+
+- ic_add_month_property
+- ic_join_bands
+
+### Old verbose way
+
+```{r}
+
+
+ndvi <- ndvi$
+  select("NDVI","EVI")$
+  map(
+    ee_utils_pyfunc(
+      function(x){x$
+          multiply(0.0001)$
+          copyProperties(x,x$propertyNames())
+          }
+    )
+  )
+
+
+ndvi_2000_2010<- ndvi$filterDate("2000-01-01", "2010-12-31")$
+  select("NDVI","EVI")
+
+ndvi_gte2016 <- ndvi$filterDate("2016-01-01", "2022-01-01")$select("NDVI","EVI")
+
+ ndvi_10yr_mean<- yr_mo_composite_stat_ic2(dat =ndvi_2000_2010,
+                                      month_range = c(1,12),
+                                      year_range = c(2000,2010),
+                                      stat = "mean",
+                                      monthly_stat_per = "range") 
+ 
+ 
+ ndvi_10yr_sd<- yr_mo_composite_stat_ic2(dat =ndvi_2000_2010,
+                                      month_range = c(1,12),
+                                      year_range = c(2000,2010),
+                                      stat = c("sd"),
+                                      monthly_stat_per = "range") 
+ ndvi_10yr_min<- yr_mo_composite_stat_ic2(dat =ndvi_2000_2010,
+                                      month_range = c(1,12),
+                                      year_range = c(2000,2010),
+                                      stat = c("min"),
+                                      monthly_stat_per = "range") |> 
+   ic_add_month_property()
+ 
+ ndvi_10yr_max<- yr_mo_composite_stat_ic2(dat =ndvi_2000_2010,
+                                      month_range = c(1,12),
+                                      year_range = c(2000,2010),
+                                      stat = c("max"),
+                                      monthly_stat_per = "range") 
+
+ 
+
+month_sequence <- ee$List$sequence(1,12)
+year_sequence <- ee$List$sequence(2016,2021)
+ summary_stats_ic_l <- month_sequence$map(
+  ee_utils_pyfunc(
+    function(m){
+      #sd
+      ndvi_10yr_sd$filter(ee$Filter$calendarRange(m, m, 'month'))$first()$
+        addBands(
+          # mean
+        ndvi_10yr_mean$filter(ee$Filter$calendarRange(m, m, 'month'))$first()
+        )$ # min
+        addBands(
+        ndvi_10yr_min$filter(ee$Filter$calendarRange(m, m, 'month'))$first()
+        )$ #max
+        addBands(
+        ndvi_10yr_max$filter(ee$Filter$calendarRange(m, m, 'month'))$first()
+        )
+      
+    }
+    
+  ) 
+  
+ )
+ 
+ 
+summary_stats_ic <- ee$ImageCollection$fromImages(summary_stats_ic_l) 
+
+# ndvi with historical bands
+summary_stats_ic_moyID <- summary_stats_ic |> 
+  ee$ImageCollection$map(
+    function(img){
+      moy = ee$Date(img$get('system:time_start'))$getRelative('month','year')
+      img$set("moy",moy)
+    
+  
+    }
+)
+
+# ndvi current bands
+ndvi_gte2016_moyID <- ndvi_gte2016 |> 
+  ee$ImageCollection$map(
+    function(img){
+      moy = ee$Date(img$get('system:time_start'))$getRelative('month','year')
+      img$set("moy",moy)
+    }
+)
+
+```
+
+### New way with wrappers
+
+```{r}
+ndvi <- ndvi$
+  select("NDVI","EVI")$
+  map(
+    ee_utils_pyfunc(
+      function(x){x$
+          multiply(0.0001)$
+          copyProperties(x,x$propertyNames())
+          }
+    )
+  )
+
+
+
+ndvi_2000_2010<- ndvi$filterDate("2000-01-01", "2010-12-31")$
+  select("NDVI","EVI")
+ndvi_gte2016 <- ndvi$filterDate("2016-01-01", "2022-01-01")$select("NDVI","EVI")
+
+
+# I need to figure out trick to combine reducers so the 4 stats below can be calculated together
+ ndvi_10yr_mean<- yr_mo_composite_stat_ic2(dat =ndvi_2000_2010,
+                                      month_range = c(1,12),
+                                      year_range = c(2000,2010),
+                                      stat = "mean",
+                                      monthly_stat_per = "range") |> 
+   ic_add_month_property()
+ 
+ 
+ ndvi_10yr_sd<- yr_mo_composite_stat_ic2(dat =ndvi_2000_2010,
+                                      month_range = c(1,12),
+                                      year_range = c(2000,2010),
+                                      stat = c("sd"),
+                                      monthly_stat_per = "range") |> 
+   ic_add_month_property()
+ ndvi_10yr_min<- yr_mo_composite_stat_ic2(dat =ndvi_2000_2010,
+                                      month_range = c(1,12),
+                                      year_range = c(2000,2010),
+                                      stat = c("min"),
+                                      monthly_stat_per = "range") |> 
+   ic_add_month_property()
+ 
+ ndvi_10yr_max<- yr_mo_composite_stat_ic2(dat =ndvi_2000_2010,
+                                      month_range = c(1,12),
+                                      year_range = c(2000,2010),
+                                      stat = c("max"),
+                                      monthly_stat_per = "range") |> 
+   ic_add_month_property()
+
+ 
+ # new func
+ ndvi_10yr_stats <- ndvi_10yr_mean |> 
+   ic_join_bands(y = ndvi_10yr_sd,by = "moy") |>  
+   ic_join_bands(y=ndvi_10yr_max,by = "moy") |> 
+   ic_join_bands(y=ndvi_10yr_min,by = "moy") 
+
+
+
+ndvi_gte2016_w_historical_bands<- ic_join_bands(x = ndvi_gte2016 |> ic_add_month_property(),
+                                                    y = ndvi_10yr_stats |> ic_add_month_property(),
+                                                    by = "moy")
+
+
+# this is still a bit ugly - opened issue wrap simplifier
+ndvi_zscore<- ndvi_gte2016_w_historical_bands$map(
+  function(img){
+    zscore<- img$expression(
+      "float((NDVI-NDVI_mean)/(NDVI_stdDev))",
+      opt_map= list(NDVI= img$select("NDVI"),
+                    NDVI_mean= img$select("NDVI_mean"),
+                    NDVI_stdDev= img$select("NDVI_stdDev")
+      )
+    )$rename("NDVI_z_score")
+    img$select("NDVI","EVI")$addBands(zscore)
+  }
+  
+) 
+
+```
+
+
+
 
 ### wish list
 - subsetting images from ImageCollection using index
