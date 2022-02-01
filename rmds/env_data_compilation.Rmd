@@ -18,7 +18,7 @@ library(sf)
 invisible(purrr::map(list.files(here::here("R"),full.names = T),.f = source))
 ```
 
-<<<<<<< HEAD
+
 Now that we have a better understanding of data and limitations it makes sense to re-think how the data is extracted from GEE. Once it is extracted it should be cleanly compiled into several long format data.frames which can be stored as a list and saved as an `rds` file.
 
 - OTP data 
@@ -29,9 +29,32 @@ Now that we have a better understanding of data and limitations it makes sense t
   + Majority of data in Maiduguri & Jere. We have had those wards cleaned to acceptable level
   
 
+## Aggregations Descriptuibs
+
+**Spatial:**
+
+- State (all 3)
+- LGA (in all 3 States),
+- LGA (Maiduguri & Jere dissolved)
+- Wards (in Maiduuri & Jere LGAs only)
+
+**Temporal:**
+
+- CHIRPS rainfall
+  + daily precipitation - mean value per admin
+  + monthly precipitation (summed at pixel level) - mean value per admin
+- MODIS TERRA (params: NDVI, Zscore NDVI, diff NDVI, VCI):
+  + 16 day composites - mean value per admin
+  + Monthly composite (max NDVI pixel level) - mean value per admin
+- SMAP Soil Moisture (moisture params: ssm, susm, smp)
+  + 3 day moisture parameters - mean value per admin
+  + Monthly composite (mean or max val pixel level) - mean value per admin
+- Surface Temp
+
   
-=======
->>>>>>> 4d4e9f153e2551e51d6d70cbf048e43c3084d607
+  
+  
+
 ## Data
 
 
@@ -42,6 +65,8 @@ ee_Initialize()
 # 16 day ndvi composites
 ndvi_dat_src <- "MODIS/006/MOD13Q1"
 ndvi <- ee$ImageCollection(ndvi_dat_src)
+
+
 
 # ee_get_date_ic(ndvi)
 
@@ -63,12 +88,551 @@ ward <- admins$ward
 woi <- ward %>% 
   filter(ADM2_EN %in% c("Maiduguri","Jere"))
 
+admins <-  load_nga_admins()
+
+
+
+
+
+
+
+chirps_gte2016 <- chirps$filterDate("2016-01-01", "2021-12-31")
+smap_gte2016 <- soil_moisture$
+  filterDate("2016-01-01", "2022-01-19")$
+  select("ssm","susm","smp")
+ndvi_gte2016 <- ndvi$filterDate("2016-01-01", "2022-01-01")$select("NDVI","EVI")
+
+
+smap_gte2016 |> ee_get_date_ic()
+smap_gte2016$first()$bandNames()$getInfo()
 ```
 
 
-# get precip
+# Most granular temporal
+
+## Get 2016-2020 data 
+
+### Define spatial levels
 
 ```{r}
+
+spatial_levels <-  list()
+
+# state level
+spatial_levels$ne_states_all <-  admins$state |> 
+  filter(ADM1_EN %in% c("Borno","Adamawa","Yobe"))
+
+# lga level
+spatial_levels$ne_lgas_all <- admins$lga |> 
+  filter(ADM1_EN %in% c("Borno","Adamawa","Yobe"))
+
+# lga level
+spatial_levels$mj_lgas_dissolved <- admins$lga |> 
+  filter(ADM2_EN %in% c("Maiduguri","Jere")) |> 
+  summarise() |> 
+  mutate(ADM2_EN="Maiduguri_Jere")
+
+# maiduguri & Jere LGA wards
+spatial_levels$mj_wards <- admins$ward |> 
+  filter(ADM2_EN %in% c("Maiduguri","Jere"))
+
+
+
+# see if this makes a difference - comps get timed out otherwise
+spatial_levels <-  spatial_levels |> 
+  map(~st_simplify(x = .x,dTolerance = 0.7))
+# get proper end dates
+# chirps |> ee_get_date_ic() |> pull(time_start) |> range()
+# soil_moisture |> ee_get_date_ic() |> pull(time_start) |> range()
+# ndvi |> ee_get_date_ic() |> pull(time_start) |> range()
+
+
+names(spatial_levels)
+spatial_levels <- spatial_levels |> 
+  list_modify("mj_wards"=NULL) 
+spatial_level_extract_cols <-  c("ADM1_EN","ADM2_EN","ADM2_EN")
+length(spatial_level_extract_cols)
+names(spatial_levels)
+```
+
+
+### Extract CHIRPS, MODIS, SMAP
+```{r}
+
+# chirps daily
+system.time(
+  chirps_gte2016_agg_mean <-spatial_levels |> 
+  map2(.y = spatial_level_extract_cols,.f = ~ee_extract_long(ic = chirps_gte2016,
+                                                             sf = .x,
+                                                             sf_col = .y,
+                                                             scale =5500,
+                                                             reducer = "mean")
+  )
+)
+
+# NDVI 16 day
+system.time(
+  ndvi_gte2016_agg_mean <-spatial_levels |> 
+  map2(.y = spatial_level_extract_cols,.f = ~ee_extract_long(ic = ndvi_gte2016,
+                                                             sf = .x,
+                                                             sf_col = .y,
+                                                             scale =5500,
+                                                             reducer = "mean")
+  )
+)
+
+# SMAP 16 day
+system.time(
+  smap_gte2016_agg_mean <-spatial_levels |> 
+  map2(.y = spatial_level_extract_cols,.f = ~ee_extract_long(ic = smap_gte2016,
+                                                             sf = .x,
+                                                             sf_col = .y,
+                                                             scale =5500,
+                                                             reducer = "mean")
+  )
+)
+
+
+
+
+modis_chirps_smap_time_raw <- list()
+modis_chirps_smap_time_raw$modis <- names(ndvi_gte2016_agg_mean) |> 
+  map_dfr(~ndvi_gte2016_agg_mean[[.x]] |> 
+        mutate(
+          level = .x,
+          time_desc = "16-day MODIS" 
+        ) |> 
+         rename_with(.fn = ~"ADM_NAME",.cols = matches("ADM"))
+      ) 
+
+modis_chirps_smap_time_raw$chirps <- names(chirps_gte2016_agg_mean) |> 
+  map_dfr(~chirps_gte2016_agg_mean[[.x]] |> 
+        mutate(
+          level = .x,
+          time_desc = "1-day CHIRPS" 
+        ) |> 
+         rename_with(.fn = ~"ADM_NAME",.cols = matches("ADM")))
+
+
+
+modis_chirps_smap_time_raw$smap <- names(smap_gte2016_agg_mean) |> 
+  map_dfr(~smap_gte2016_agg_mean[[.x]] |> 
+        mutate(
+          level = .x,
+          time_desc = "3-day SMAP" 
+        ) |> 
+        rename_with(.fn = ~"ADM_NAME",.cols = matches("ADM"))
+        ) #|> 
+  
+
+modis_chirps_smap_time_raw_df <- bind_rows(modis_chirps_smap_time_raw)
+modis_chirps_smap_time_raw_df |> 
+  pivot_wider(id_cols = c(date,ADM_NAME),names_from= parameter, values_from=value) |> 
+  arrange(date) |> 
+  print(n=600)
+
+```
+
+
+### Add MODIS NDVI historical comparisons
+- need to work in VCI
+<!-- https://journals.ametsoc.org/view/journals/clim/23/3/2009jcli2900.1.xml -->
+  + VCI = (NDVI-NDVImin)/(NDVImax-NDVImin)
+  +VHI
+
+```{r}
+ndvi <- ndvi$
+  select("NDVI","EVI")$
+  map(
+    ee_utils_pyfunc(
+      function(x){x$
+          multiply(0.0001)$
+          copyProperties(x,x$propertyNames())
+          }
+    )
+  )
+
+
+
+ndvi_2000_2010<- ndvi$filterDate("2000-01-01", "2010-12-31")$
+  select("NDVI","EVI")
+ndvi_gte2016 <- ndvi$filterDate("2016-01-01", "2022-01-01")$select("NDVI","EVI")
+
+
+# I need to figure out trick to combine reducers so the 4 stats below can be calculated together
+ ndvi_10yr_mean<- yr_mo_composite_stat_ic2(dat =ndvi_2000_2010,
+                                      month_range = c(1,12),
+                                      year_range = c(2000,2010),
+                                      stat = "mean",
+                                      monthly_stat_per = "range") |> 
+   ic_add_month_property()
+ 
+ 
+ ndvi_10yr_sd<- yr_mo_composite_stat_ic2(dat =ndvi_2000_2010,
+                                      month_range = c(1,12),
+                                      year_range = c(2000,2010),
+                                      stat = c("sd"),
+                                      monthly_stat_per = "range") |> 
+   ic_add_month_property()
+ ndvi_10yr_min<- yr_mo_composite_stat_ic2(dat =ndvi_2000_2010,
+                                      month_range = c(1,12),
+                                      year_range = c(2000,2010),
+                                      stat = c("min"),
+                                      monthly_stat_per = "range") |> 
+   ic_add_month_property()
+ 
+ ndvi_10yr_max<- yr_mo_composite_stat_ic2(dat =ndvi_2000_2010,
+                                      month_range = c(1,12),
+                                      year_range = c(2000,2010),
+                                      stat = c("max"),
+                                      monthly_stat_per = "range") |> 
+   ic_add_month_property()
+
+ 
+ # new func
+ ndvi_10yr_stats <- ndvi_10yr_mean |> 
+   ic_join_bands(y = ndvi_10yr_sd,by = "moy") |>  
+   ic_join_bands(y=ndvi_10yr_max,by = "moy") |> 
+   ic_join_bands(y=ndvi_10yr_min,by = "moy") 
+
+
+
+ndvi_gte2016_w_historical_bands<- ic_join_bands(x = ndvi_gte2016 |> ic_add_month_property(),
+                                                    y = ndvi_10yr_stats |> ic_add_month_property(),
+                                                    by = "moy")
+
+
+# this is still a bit ugly - opened issue wrap simplifier
+ndvi_zscore<- ndvi_gte2016_w_historical_bands$map(
+  function(img){
+    zscore<- img$expression(
+      "float((NDVI-NDVI_mean)/(NDVI_stdDev))",
+      opt_map= list(NDVI= img$select("NDVI"),
+                    NDVI_mean= img$select("NDVI_mean"),
+                    NDVI_stdDev= img$select("NDVI_stdDev")
+      )
+    )$rename("NDVI_z_score")
+    img$select("NDVI","EVI")$addBands(zscore)
+  }
+  
+) 
+
+# ndvi_zscore$first()$projection()$nominalScale()$getInfo()
+# ee_extract_long |> debugonce()
+# ck <- ee_extract_long(ic = ndvi_zscore,sf = spatial_levels$mj_lgas_dissolved,sf_col = "ADM2_EN",scale = 250,reducer = "mean")
+
+
+  # NDVI 16 day
+system.time(
+  ndvi_gte2016_agg_mean <-spatial_levels |> 
+  map2(.y = spatial_level_extract_cols,.f = ~ee_extract_long(ic = ndvi_zscore,
+                                                             sf = .x,
+                                                             sf_col = .y,
+                                                             scale =250,
+                                                             reducer = "mean")
+  )
+)
+
+
+modis_chirps_smap_awd_otp_time_raw_df |> count(time_desc)
+
+
+ndvi_gte2016_agg_mean_df <- names(ndvi_gte2016_agg_mean) |> 
+  map_dfr(~ndvi_gte2016_agg_mean[[.x]] |> 
+        mutate(
+          level = .x,
+          time_desc = "16-day MODIS" 
+        ) |> 
+         rename_with(.fn = ~"ADM_NAME",.cols = matches("ADM"))
+      ) 
+
+
+modis_chirps_smap_awd_otp_mz_time_raw_df <- bind_rows(modis_chirps_smap_awd_otp_time_raw_df |> 
+  filter(time_desc!="16-day MODIS") ,
+  ndvi_gte2016_agg_mean_df
+)
+  # 
+# modis_chirps_smap_awd_otp_mz_time_raw_df |> 
+  # write_rds(here::here("data/modis_chirps_smap_awd_otp_orig_ts.rds"))
+
+
+```
+
+
+
+#  OTP & AWD data in long format to bind 
+
+also should calculate prevalence by dividing by pop #
+```{r}
+
+pop <-  read_csv(here::here("data/pop_lga_msna2019_sf.csv"))
+awd <- load_awd(lgas = NULL)
+awd_w_pop <- awd |> 
+  left_join(
+    
+    admins$lga |> 
+      st_drop_geometry() |> 
+      select(ADM2_EN,ADM2_PCODE),
+    by="ADM2_EN"
+  ) |> 
+  left_join(pop, by="ADM2_PCODE") 
+library(lubridate)
+modis_chirps_smap_time_raw_df |> count(level)  
+awd_w_pop_prev_long <- awd_w_pop |> 
+  mutate(
+    date= ymd(date),
+    awd_cases=as.numeric(cases),
+    awd_prev_per_1000=awd_cases/pop*1000,
+    # cases_calc= (prev*pop)/1000
+  ) |> 
+  rename(ADM_NAME="ADM2_EN") |> 
+  select(ADM_NAME, date, awd_cases, awd_prev_per_1000) |> 
+  pivot_longer(awd_cases:awd_prev_per_1000,names_to="parameter") |> 
+  mutate(
+    level="ne_lgas_borno",
+    time_desc= "1-week AWD"
+  )
+
+
+modis_chirps_smap_awd_time_raw_df <- bind_rows(modis_chirps_smap_time_raw_df,awd_w_pop_prev_long)
+
+
+otp <-  read_rds(here::here("data/20220121_MUAC_w_maidu_jere_wards_harmonized.rds"))
+# a little extra cleaning required
+otp_cleaned <- otp |> 
+  select(date=date_dt, State, LGA=LGA_crct,Ward=ward_crct,new_otp_admissions,muac_total_screened) |> 
+  # a little additional cleaning. 
+  # assume if there are records for muac screenings then facility was open and NA for OTP admissions = 0
+  mutate(new_otp_admissions=if_else(!is.na(muac_total_screened),replace_na(new_otp_admissions,0),new_otp_admissions)) |> 
+  filter(!is.na(date)) |> 
+  filter(date>"2010-01-01") # weird outlier removal
+
+# show relationship between wards reporting and total cases
+otp_cleaned|> 
+  group_by(LGA,date,.drop=F ) |> 
+  summarise(
+    otp_cases=sum(new_otp_admissions,na.rm=T),
+    wards_reporting = sum(!is.na(new_otp_admissions)),
+    .groups = "drop"
+  ) |> 
+  ggplot(aes(x= wards_reporting,y=otp_cases))+
+  geom_point()
+
+# dang its a bit more complicated because some LGAs just are bigger...hmmm why dont i just
+# add number of wards reporting and overall pop and we can account for these
+
+
+otp_by_lga <- otp_cleaned|> 
+  group_by(LGA,date,.drop=F ) |> 
+  summarise(
+    otp_cases=sum(new_otp_admissions,na.rm=T),
+    wards_reporting = sum(!is.na(new_otp_admissions)),
+    .groups = "drop"
+  ) |> 
+  left_join(
+    admins$lga |> 
+      st_drop_geometry() |> 
+      select(ADM2_EN,ADM2_PCODE),
+    by=c("LGA"="ADM2_EN")
+  ) |> filter(!is.na(ADM2_PCODE)) |> # remove 3 typos -- not clear what they are, but only had 1 record each
+  left_join(pop, by="ADM2_PCODE") |> 
+  mutate(
+    otp_cases_per_1000=(otp_cases/pop)*1000
+  ) |> 
+  rename(ADM_NAME="LGA") |> 
+  select(ADM_NAME,date, otp_cases,otp_cases_per_1000,wards_reporting) |> 
+  pivot_longer(otp_cases:wards_reporting,names_to = "parameter") |> 
+  mutate(
+    level= "ne_lgas_all",
+    time_desc= "1-month OTP"
+    
+         )
+
+
+
+
+modis_chirps_smap_awd_otp_time_raw_df<- bind_rows(modis_chirps_smap_awd_time_raw_df,otp_by_lga)
+
+# modis_chirps_smap_awd_otp_time_raw_df |>
+#   write_rds(here::here("data/modis_chirps_smap_awd_otp_orig_ts.rds"))
+```
+
+
+# Clean up
+- we have all the data in long format now together
+- we want to produce the data spatio temporal aggregations of interest now....
+- we might want to engineer some dates for monthly data
+
+```{r}
+library(janitor)
+mdf <- read_rds(here::here("data/modis_chirps_smap_awd_otp_orig_ts.rds"))
+
+# for OTP data we have no choice but to look at monthly data
+# for AWD we can potentially do weekly, but will be hard to get NDVI at weekly
+
+lga_level_dat <- mdf |> 
+  filter(year(date)>=2017) |> 
+  mutate(
+    level2= if_else(level %in% c("ne_lgas_all","ne_lgas_borno"),"lga",level)
+  ) |> 
+  filter(level2=="lga")
+
+
+lga_level_dat |> 
+  filter(parameter=="precipitation") |> 
+  group_by(ADM_NAME) |>
+  mutate(
+    rmax_3day  = zoo::rollmax(x = value, 3, align = "right", fill = NA)
+  )
+
+
+
+
+weekly_lga <- mdf |> 
+  filter(year(date)>=2017) |> 
+  mutate(
+    level2= if_else(level %in% c("ne_lgas_all","ne_lgas_borno"),"lga",level)
+  ) |> 
+  filter(level2=="lga") |> 
+  # lets see how weekly looks - our only problem should be modis
+  group_by(parameter,yr=year(date),wk=week(date),ADM_NAME) |>
+  # filter(yr==2017, wk==1, parameter=="precipitation") |>
+  arrange(ADM_NAME) |>
+  # summarise(value=mean(value)) |> print(n=65)
+  summarise(
+    value_mean=mean(value,na.rm=T),
+    value_sum= sum(value,na.rm=T),
+    # value_sum = if_else(parameter=="precipitation", sum(value,na.rm=T),mean(value,na.rm=T)),
+    .groups="drop"
+  ) |> 
+  mutate(value= if_else(parameter%in%c("precipitation","awd_cases","otp_cases"), value_sum,value_mean))
+weekly_lga$ADM_NAME |> unique() |> length()
+admins$lga |> 
+  filter(ADM1_EN=="Borno") |> 
+  pull(ADM2_EN) |> unique() 
+
+weekly_lga |> 
+  mutate(wk_date = ymd(str_c(yr,"-01-01"))+weeks(wk)) |> 
+  select(-value_mean,
+         -value_sum) |> 
+  pivot_wider(
+    id_cols = c("ADM_NAME","wk_date"),
+    names_from=parameter,
+    values_from=value
+    ) |>
+  filter(!is.na(awd_cases)) |>
+  ggplot(aes(x=wk_date,y = awd_cases, color=ADM_NAME))+
+  geom_line()+
+  facet_wrap(~ADM_NAME,scales = "free_y")
+  count(ADM_NAME)|> 
+  print(n=23)
+  
+  print(n=100)
+  filter(!is.na(otp_cases)) # |>
+  # janitor::
+# weekly_lga |> 
+
+
+maidu_params_split <- lga_level_dat |> 
+  filter(ADM_NAME%in%c("Maiduguri")) |> 
+  group_split(parameter)
+
+maidu_awd <- maidu_params_split[[1]] |> 
+  rename(awd_cases="value") 
+
+maidu_awd_xts<- xts::xts(maidu_awd$awd_cases,order.by=maidu_awd$date)
+
+maidu_precip <- maidu_params_split[[8]] |> 
+  rename(precip="value") 
+
+maidu_precip_xts<- xts::xts(maidu_precip$precip,order.by=maidu_precip$date)
+maidu_precip_xts |> head()
+maidu_awd_xts |> head()
+
+merge(x = maidu_awd_xts,maidu_precip_xts) |> head()
+
+
+
+mdf |> 
+  filter(year(date)>=2017) |> 
+  mutate(
+    level2= if_else(level %in% c("ne_lgas_all","ne_lgas_borno"),"lga",level)
+  ) |> 
+  filter(level2=="lga") |> 
+  # lets see how weekly looks - our only problem should be modis
+  group_by(parameter,yr=year(date),wk=week(date),ADM_NAME) |>
+  # filter(yr==2017, wk==1, parameter=="precipitation") |>
+  arrange(ADM_NAME) |>
+  # summarise(value=mean(value)) |> print(n=65)
+  summarise(
+    value_mean=mean(value,na.rm=T),
+    value_sum= sum(value,na.rm=T),
+    # value_sum = if_else(parameter=="precipitation", sum(value,na.rm=T),mean(value,na.rm=T)),
+    .groups="drop"
+  ) |> 
+  mutate(value= if_else(parameter%in%c("precipitation","awd_cases","otp_cases"), value_sum,value_mean)) |> 
+  select(-value_mean, - value_sum) |> 
+  pivot_wider(id_cols = c("ADM_NAME",
+                          # "level2",
+                          "yr",
+                          "wk"),names_from=parameter,
+              values_from=value) |> 
+  filter(!is.na(otp_cases)) |> 
+  print(n=100)
+
+
+
+```
+
+
+
+```{r scraptest}
+##### Creating the Shapefile 
+st_geometry(spatial_levels$mj_wards) %>% print(n=nrow(.))
+st_is_valid(spatial_levels$mj_wards)
+
+tk2 <- spatial_levels$mj_wards |> 
+  st_buffer(dist = 0)
+
+library(sf)
+library(cptcity) 
+# debugonce(sf_as_ee)
+
+mj_wards_ee <- spatial_levels$mj_wards |> 
+  # select(ADM3_PCODE) |> 
+  # slice(1) |> 
+  # st_geometry() |>
+  # st_as_sf() |> 
+  # st_simplify(dTolerance = 0.7) |>
+  sf_as_ee()
+st_geometry
+
+chirps_1day_ex<- chirps$filterDate("2019-07-10","2019-07-11")$max()
+chirpsVis <- list(
+  min = 0, 
+  max = 50,
+  palette = cpt("grass_bcyr")
+)
+Map$centerObject(mj_wards_ee)
+Map$addLayer(
+  eeObject = chirps_1day_ex,
+  visParams = chirpsVis,
+  name = 'Precipitation'
+)#+Map$addLayer(mj_wards_ee)
+
+library(leaflet)
+leaflet() |> 
+  # addTiles() |> 
+  addProviderTiles("Esri.WorldImagery") |> 
+  addPolygons(data=spatial_levels$ne_lgas_all) |>  
+  addPolygons(data=spatial_levels$mj_wards |> st_simplify(dTolerance = 200),color = "red")
+spatial_levels$mj_wards |> st_simplify(dTolerance = 200) |> object.size()
+spatial_levels$mj_wards|> object.size()
+
+
+```
+
+```{r precipscrap}
 
 monthly_precip <- yr_mo_composite_stat_ic(dat = chirps,
                                           month_range = c(1,12),
@@ -108,7 +672,7 @@ monthly_precip_ward_long <- monthly_precip_ward |>
 ```
 
 ## Soil Moisure
-```{r, eval=F}
+```{r soilmoisturescrap, eval=F}
 soil_moisture %>% ee_get_date_ic() %>% pull(time_start) %>% range()
 # soil_moisture
 soil_moisture$first()$bandNames()$getInfo()
@@ -212,37 +776,157 @@ soil_moisture_3_day_mj_long <- soil_moisture_3_day_mj |>
 
 ```
 
-## NDVI
-- need to work in VCI
-<!-- https://journals.ametsoc.org/view/journals/clim/23/3/2009jcli2900.1.xml -->
-  + VCI = (NDVI-NDVImin)/(NDVImax-NDVImin)
-  +VHI
 
-```{r}
 
-ndvi_rescaled <- ndvi$
-  select("NDVI")$
+
+```{r somescrap}
+
+
+year_sequence <- ee$List$sequence(2016,2021)
+
+ndvi_gte2016$first()$bandNames()$getInfo()
+summary_stats_ic$first()$bandNames()$getInfo()
+
+wtfd <- year_sequence$map(
+  ee_utils_pyfunc(
+    function(y){
+      month_sequence$map(
+        ee_utils_pyfunc(
+          function(m){
+            
+            # recent_yrmo<- ee$Image(ndvi_gte2016$
+            #    filter(ee$Filter$calendarRange(y, y, 'year'))$
+            #    filter(ee$Filter$calendarRange(m, m, 'month'))$
+            #       first()
+            # )
+            recent_yrmo<- ee$ImageCollection(ndvi_gte2016$
+                                               filter(ee$Filter$calendarRange(y, y, 'year'))$
+                                               filter(ee$Filter$calendarRange(m, m, 'month'))
+            )
+            
+            
+            
+            hist_yrmo <-  ee$Image(summary_stats_ic$
+                                     filter(ee$Filter$calendarRange(2000, 2000, 'year'))$
+                                     filter(ee$Filter$calendarRange(m, m, 'month'))$
+                                     first()
+            )
+            ee$Image(recent_yrmo|> 
+              ee$ImageCollection$
+              map(
+                function(img){
+                  current_hist_combined <- img$addBands(hist_yrmo_ck)
+                  current_hist_combined$expression(
+                    expression="float((NDVI-NDVI_mean)/NDVI_stdDev)",
+                    opt_map= list(NDVI= current_hist_combined$select("NDVI"),
+                                  NDVI_mean= current_hist_combined$select("NDVI_mean"),
+                                  NDVI_stdDev= current_hist_combined$select("NDVI_stdDev")
+                    ))$rename("NDVI_Zscore")
+                  
+                  
+                  
+                }
+              )
+            )
+            
+          }
+        )
+      )
+    }
+  )
+)
+
+
+
+# WATCH this 
+ recent_yrmo_ck<- ee$ImageCollection(ndvi_gte2016$
+              filter(ee$Filter$calendarRange(2016, 2016, 'year'))$
+              filter(ee$Filter$calendarRange(1, 1, 'month'))
+           )
+                 
+           
+            
+ hist_yrmo_ck <-  ee$Image(summary_stats_ic$
+                          filter(ee$Filter$calendarRange(2000, 2000, 'year'))$
+                          filter(ee$Filter$calendarRange(1, 1, 'month'))$
+                          first()
+            )
+recent_yrmo_ck$size()$getInfo()
+recent_yrmo_ck |> ee_get_date_ic()
+
+ee$List(recent_yrmo_ck |> 
+  ee$ImageCollection$
+  map(
+    function(img){
+      current_hist_combined <- img$addBands(hist_yrmo_ck)
+        current_hist_combined$expression(
+        expression="float((NDVI-NDVI_mean)/NDVI_stdDev)",
+        opt_map= list(
+        NDVI= current_hist_combined$select("NDVI"),
+        NDVI_mean= current_hist_combined$select("NDVI_mean"),
+        NDVI_stdDev= current_hist_combined$select("NDVI_stdDev")
+        )
+  )$rename("NDVI_Zscore")
+    }
+  )
+)
+ee$List
+ee$ImageCollection$toList
+
+# |> eCe_print()
+              
+wtfd_list<- wtfd$toList(wtfd$size())
+
+
+# wtfd_list_indx <- wtfd_list$get(1)
+wtfd_list_indx <- wtfd$get(1)
+ee$Image(wtfd_list_indx) %>% ee_print()
+suckit <- wtfd$
   map(
     ee_utils_pyfunc(
-      function(x){x$
-          multiply(0.0001)$
-          copyProperties(x,x$propertyNames())
-          }
+      function(x){
+        x$
+          map(
+            ee$to
+          )
+      }
     )
   )
+ee$ImageCollection$combine( )
+ee$ImageCollection$fromImages(wtfd$flatten())$first() 
+ee$ImageCollection$combine(wtfd$flatten)  
+  
+  wtfd$getInfo()
+wtfd |> ee_print()  
+ee$fromImages
+wtf_ic$first()$getInfo()
+wtfd$size()$getInfo()
+wtfd$length()$getInfo()
+wtfd$flatten()$flatten()$size()$getInfo()
 
+ee$ImageCollection$merge(wtfd)
+wtf_ic <- ee$ImageCollection$fromImages(ee$List(wtfd))
+wtf_ic <- ee$ImageCollection$fromImages(wtfd$flatten()) 
+wtf_ic <- ee$ImageCollection$fromImages(suckit) 
 
+wtf_ic <- ee$ImageCollection$fromImages(wtfd) 
+ee$Image(wtf_ic$first()) |> ee_print()
 
+wtf_ic |> ee_print()
+ 
+ 
+ 
+spent<- 40*7.40
+worth <- 3.83*40 
+(spent-worth)+worth
 
-ndvi_rescaled_monthly <- yr_mo_composite_stat_ic(dat =ndvi_rescaled,
-                                                 month_range = c(1,12),
-                                                 year_range = c(2016,2021),
-                                                 stat = "mean")
+comp |> ee_print()
+ndvi_gte2016 |> ee_print() # 138
+evi <- image$expression( expression = "2.5 * (float(nir - red) / (nir + 6 * red - 7.5 * blue + 1))",
+                         opt_map = list( nir = image$select("B8"),
+                                         red = image$select("B4"),
+                                         blue = image$select("B2")))$rename('EVI')
 
-
-
-ndvi_rescaled_monthly <- ndvi_rescaled_monthly$select("NDVI")
-ndvi_rescaled_monthly %>% ee_print()
 month_sequence <- ee$List$sequence(1,12)
 year_sequence <- ee$List$sequence(2016,2021)
 
@@ -268,6 +952,15 @@ ndvi_rescaled_monthly_historical_mean <- month_sequence$map(
 )
 )
 
+historical_range_to_monthly_composite_ic<- function(ic,year_range,month_seq){
+  
+  
+  
+  
+}
+
+
+composi
 
 # try simplifying above
 ndvi_rescaled_monthly_historical_mean <- month_sequence$map(
