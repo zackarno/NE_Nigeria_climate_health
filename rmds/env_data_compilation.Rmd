@@ -643,18 +643,23 @@ otp_monthly_full |>
   geom_point()+
   scale_y_log10()
 
+```
   
   
+  
+### NGA MODEL Viz  
+```{r}
   # should i make a model mapper function?
   # for each model pull out p, r.adj of significant lgas
   # create facet plot
   # create leaflet map?... how to suppl
-  
+nga_admins <- load_nga_admins()  
+nga_admins_lga <- nga_admins$lga
 nga_model_vis <- function(df=nest_otp,lm_formula){
   res <-  list()
   formulaized_lm <- formula(lm_formula)
   
-  sig_model_stats_tbl <- df |> 
+  model_stats_tbl <- df |> 
      mutate(
        fit = map(data, ~ lm(formulaized_lm, data = .x)),
        tidied = map(fit,broom::tidy),# not actually using now, but might later
@@ -662,36 +667,89 @@ nga_model_vis <- function(df=nest_otp,lm_formula){
      ) |> 
     unnest(glanced) %>% 
     select(-data, -fit) |> 
-    filter(p.value<0.05) |> 
+    # filter(p.value<0.05) |> 
     arrange(desc(adj.r.squared))
   
-  sig_admin_names <- sig_model_stats_tbl$ADM_NAME
+  model_stats_tbl <- model_stats_tbl |> 
+    mutate(
+      sig_tf= if_else(p.value<0.05,"green","orange")
+    )
       
+  sig_admin_names <- model_stats_tbl |> 
+    filter(p.value<0.05) |> pull(ADM_NAME)
+    
    
-   ind= all.vars(formulaized_lm)[1]
-   deps= all.vars(formulaized_lm)[-1]
+   dependent= all.vars(formulaized_lm)[1]
+   independents= all.vars(formulaized_lm)[-1]
    
    sig_df_unnested <- df |> 
      filter(ADM_NAME %in% sig_admin_names) |>
      unnest(data)
      
-   plot_list<- deps |> 
+   
+   # create scatter plots
+   plot_list<- independents |> 
        map(~sig_df_unnested |> 
-       ggplot(aes(x=!!sym(ind), y= !!sym(.x) ))+
-       geom_point()+
-       geom_smooth(method="lm",formula="y~x")
+       ggplot(aes(x=!!sym(.x),
+                  y= !!sym(dependents) ))+
+         labs(x=.x, y= dependents)+
+         geom_point()+
+         geom_smooth(method="lm",formula="y~x")+
+         facet_wrap(~ADM_NAME,scales = "free_y")
        ) |> 
-     set_names(paste0("plot_",deps))
+     set_names(paste0("plot_",independents))
+   
+   # create leaflet map
+  ne_lga_admins <- nga_admins_lga |> 
+    filter(ADM1_EN %in% c("Borno","Adamawa","Yobe"))
+   ne_nga_admin_vals<- ne_lga_admins |> 
+     left_join(
+        model_stats_tbl |> 
+     select(ADM_NAME,r.squared, adj.r.squared, p.value,sig_tf),
+     by=c("ADM2_EN"="ADM_NAME")
+       
+     )
+   mypalette <- leaflet::colorNumeric( palette="viridis", 
+                                       domain=ne_nga_admin_vals |> 
+                                         filter(p.value<0.05) |>
+                                         pull(adj.r.squared),
+                                       na.color="grey")
+
+  
+   bins <- c(0,0.1,0.2,0.25,0.3,0.33,0.37,0.4,0.44)
+   pal <- leaflet::colorBin("YlGn", domain = abs(ne_nga_admin_vals$adj.r.squared), bins = bins)
+   
+   tooltip <- paste(
+    "State: ", ne_nga_admin_vals$ADM1_EN,"<br/>", 
+    "LGA: ", ne_nga_admin_vals$ADM2_EN, "<br/>", 
+    "adjusted r squared ", round(ne_nga_admin_vals$adj.r.squared, 2),"<br/>", 
+    "p value ", round(ne_nga_admin_vals$p.value, 3), "<br/>", 
+    sep="") %>%
+  lapply(htmltools::HTML)
+
+   res$leaflet_map <- leaflet::leaflet(ne_nga_admin_vals) |> 
+     leaflet::addTiles() |> 
+     leaflet::addPolygons(
+       color=ne_nga_admin_vals$sig_tf,
+       fillColor = ~pal(abs(adj.r.squared)),
+       label= tooltip
+   ) 
+   list(plot_list,res) |> flatten()
    
   
    
      
      
-   }
-   
   }
-nga_model_vis(df = nest_otp,lm_formula = "otp_cases_per_1000~susm+ssm+smp")  
+   
   
+mod_res<- nga_model_vis(
+  df = nest_otp,
+  lm_formula = "otp_cases_per_1000~precip_max_5day")  
+
+otp_monthly_full
+mod_res$plot_precip_max_5day
+mod_res$leaflet_map
   
   
   
