@@ -465,6 +465,8 @@ modis_chirps_smap_awd_otp_time_raw_df<- bind_rows(modis_chirps_smap_awd_time_raw
 
 ```{r}
 library(janitor)
+library(lubridate)
+library(glue)
 mdf <- read_rds(here::here("data/modis_chirps_smap_awd_otp_orig_ts.rds"))
 
 # for OTP data we have no choice but to look at monthly data
@@ -473,17 +475,167 @@ mdf <- read_rds(here::here("data/modis_chirps_smap_awd_otp_orig_ts.rds"))
 lga_level_dat <- mdf |> 
   filter(year(date)>=2017) |> 
   mutate(
+    mo_date= glue("{year(date)}-{month(date)}-01"),
     level2= if_else(level %in% c("ne_lgas_all","ne_lgas_borno"),"lga",level)
   ) |> 
   filter(level2=="lga")
 
 
-lga_level_dat |> 
+# calculate rolling sums
+precip_rolling_sums<- lga_level_dat |> 
   filter(parameter=="precipitation") |> 
   group_by(ADM_NAME) |>
   mutate(
-    rmax_3day  = zoo::rollmax(x = value, 3, align = "right", fill = NA)
-  )
+    rollsum_1day  =zoo::rollsum(x = value, k=1, align = "right", fill = NA),
+    rollsum_3day  =zoo::rollsum(x = value, k=3, align = "right", fill = NA),
+    rollsum_5day  =zoo::rollsum(x = value, k=5, align = "right", fill = NA),
+    rollsum_10day  =zoo::rollsum(x = value, k=10, align = "right", fill = NA),
+  ) |> ungroup()
+
+
+# summarise rolling sums with max vals (wide)
+precip_rolling_stats <- precip_rolling_sums |> 
+  group_by(ADM_NAME,mo_date) |>
+  summarise(
+    precip_max_1day= max(rollsum_1day,na.rm=T),
+    precip_max_3day= max(rollsum_3day,na.rm=T),
+    precip_max_5day= max(rollsum_5day,na.rm=T),
+    precip_max_10day= max(rollsum_10day,na.rm=T),.groups = "drop"
+  ) 
+  
+
+# summarise lga data to month
+monthly_lga_level <- lga_level_dat |> 
+  group_by(parameter,mo_date,ADM_NAME) |>
+  arrange(ADM_NAME) |>
+  summarise(
+    value_mean=mean(value,na.rm=T),
+    value_sum= sum(value,na.rm=T),
+    .groups="drop"
+  ) |> 
+  mutate(value= if_else(parameter%in%c("precipitation","awd_cases","otp_cases"), value_sum,value_mean))
+
+
+# pivot wider  and add on precip stats
+monthly_lga_wide <- monthly_lga_level |> 
+  select(-value_mean,
+         -value_sum) |> 
+  pivot_wider(
+    id_cols = c("ADM_NAME","mo_date"),
+    names_from=parameter,
+    values_from=value
+    ) |> 
+  left_join(precip_rolling_stats)
+
+
+# i think this is a pretty reasonable dat set to use for modeling
+otp_monthly_full <- monthly_lga_wide |> 
+  filter(!is.na(otp_cases))
+```
+
+
+```{r}
+admins <- load_nga_admins()
+otp_monthly_full <- otp_monthly_full |>
+  group_by(
+    # yr=year(mo_date)
+    ADM_NAME
+    ) |> 
+  mutate(
+    otp_z=(otp_cases-mean(otp_cases,na.rm=T))/sd(otp_cases),
+    precip_z=(precipitation-mean(precipitation,na.rm=T))/sd(precipitation)
+    ) |> 
+  ungroup()
+
+
+
+mtcars <- as_tibble(mtcars)  # to play nicely with list-cols
+
+nest_mtcars <- mtcars %>%
+  nest(data = c(-am)) 
+
+nest_mtcars %>% 
+  mutate(
+    fit = map(data, ~ lm(wt ~ mpg + qsec + gear, data = .x)),  # S3 list-col
+    # tidied = map(fit, broom::tidy)
+  ) %>% 
+  unnest(tidied) %>% 
+  select(-data, -fit)
+  
+otp_monthly_full$precipitation
+nest_otp <- otp_monthly_full %>%
+  filter(!is.na(otp_cases_per_1000)) |> 
+  filter(!is.na(precipitation)) |> 
+  nest(data = c(-ADM_NAME)) 
+
+# need to add wards reporting.
+bla <- otp_monthly_full |> 
+  filter(ADM_NAME=="Nganzai")
+boom<- lm(otp_cases_per_1000~precipitation+precip_max_3day, data= bla) |> broom::glance()
+summary(boom)
+# 59/12
+# otp_monthly_full$mo_date |> unique()
+nest_otp |> 
+  mutate(
+    # fit = map(data, ~ lm(otp_cases_per_1000~precipitation, data = .x)),
+    # fit = map(data, ~ lm(otp_cases_per_1000~+precip_max_1day, data = .x)),
+    # fit = map(data, ~ lm(otp_cases_per_1000~+susm, data = .x)),
+    # fit = map(data, ~ lm(otp_cases_per_1000~precipitation+susm, data = .x)),
+    # THIS IS INTERSTING
+  
+    fit = map(data, ~ lm(otp_cases_per_1000~NDVI_z_score, data = .x)),
+    # CHECKING OUT ROLLLING MAX WITH NDVI Z -- NOT HUGE AFFECT
+    # fit = map(data, ~ lm(otp_cases_per_1000~NDVI_z_score+precip_max_1day, data = .x)),
+    # fit = map(data, ~ lm(otp_cases_per_1000~NDVI, data = .x)),
+    tidied = map(fit,broom::tidy),
+    glanced= map(fit, broom::glance)
+  ) |> 
+  # unnest(tidied) %>% 
+  unnest(glanced) %>% 
+  select(-data, -fit) |> 
+  # filter(term=="precipitation") |> 
+  # filter(ADM_NAME=="Maiduguri")
+  filter(p.value<0.05) |> 
+  arrange(desc(adj.r.squared))
+  print(n=23)
+
+# some interesting results particularly magumeri
+# lets check it out in more detail
+  
+otp_monthly_full |> 
+  filter(ADM_NAME=="Magumeri") |> 
+  ggplot(aes(x=NDVI_z_score,y=otp_cases_per_1000))+
+  geom_point()+
+  scale_y_log10()
+otp_monthly_full |> 
+  filter(ADM_NAME=="Magumeri") |> 
+  ggplot(aes(x=precipitation))+
+  geom_histogram()
+  geom_point()+
+  scale_y_log10()
+otp_monthly_full |> 
+  filter(ADM_NAME=="Magumeri") |> 
+  ggplot(aes(x=precipitation))+
+  geom_histogram()
+  geom_point()+
+  scale_y_log10()
+
+
+otp_monthly_full |> 
+  nest(
+    ADM_NAME
+  ) |> 
+  mutate(
+    fit= map(data, ~lm(otp_cases_per_1000~precipitation, data=.x))
+    
+    ) 
+
+lm(otp_cases_per_1000~precipitation+NDVI, otp_monthly_full ) |> summary()
+
+
+
+```
+
 
 
 
