@@ -579,11 +579,12 @@ nest_otp |>
   mutate(
     # fit = map(data, ~ lm(otp_cases_per_1000~precipitation, data = .x)),
     # fit = map(data, ~ lm(otp_cases_per_1000~+precip_max_1day, data = .x)),
-    # fit = map(data, ~ lm(otp_cases_per_1000~+susm, data = .x)),
+    # fit = map(data, ~ lm(otp_cases_per_1000~susm, data = .x)),
+    fit = map(data, ~ lm(otp_cases_per_1000~susm+ssm+smp, data = .x)),
     # fit = map(data, ~ lm(otp_cases_per_1000~precipitation+susm, data = .x)),
     # THIS IS INTERSTING
   
-    fit = map(data, ~ lm(otp_cases_per_1000~NDVI_z_score, data = .x)),
+    # fit = map(data, ~ lm(otp_cases_per_1000~NDVI_z_score, data = .x)),
     # CHECKING OUT ROLLLING MAX WITH NDVI Z -- NOT HUGE AFFECT
     # fit = map(data, ~ lm(otp_cases_per_1000~NDVI_z_score+precip_max_1day, data = .x)),
     # fit = map(data, ~ lm(otp_cases_per_1000~NDVI, data = .x)),
@@ -606,7 +607,29 @@ otp_monthly_full |>
   filter(ADM_NAME=="Magumeri") |> 
   ggplot(aes(x=NDVI_z_score,y=otp_cases_per_1000))+
   geom_point()+
-  scale_y_log10()
+  scale_y_log10()+
+  labs(x= "NDVI Z score",y= "OTP cases per 1000",title = "Magumeri LGA")+
+  geom_smooth(method="lm")+
+  theme_bw()
+
+otp_monthly_full |> 
+  filter(ADM_NAME=="Gwoza") |> 
+  ggplot(aes(x=NDVI_z_score,y=otp_cases_per_1000))+
+  geom_point()+
+  scale_y_log10()+
+  labs(x= "NDVI Z score",y= "OTP cases per 1000",title = "Gwoza LGA")+
+  geom_smooth(method="lm")+
+  theme_bw()
+
+otp_monthly_full |> 
+  filter(ADM_NAME=="Konduga") |> 
+  ggplot(aes(x=NDVI_z_score,y=otp_cases_per_1000))+
+  geom_point()+
+  scale_y_log10()+
+  labs(x= "NDVI Z score",y= "OTP cases per 1000",title = "Magumeri LGA")+
+  geom_smooth(method="lm")+
+  theme_bw()
+
 otp_monthly_full |> 
   filter(ADM_NAME=="Magumeri") |> 
   ggplot(aes(x=precipitation))+
@@ -620,6 +643,65 @@ otp_monthly_full |>
   geom_point()+
   scale_y_log10()
 
+  
+  
+  # should i make a model mapper function?
+  # for each model pull out p, r.adj of significant lgas
+  # create facet plot
+  # create leaflet map?... how to suppl
+  
+nga_model_vis <- function(df=nest_otp,lm_formula){
+  res <-  list()
+  formulaized_lm <- formula(lm_formula)
+  
+  sig_model_stats_tbl <- df |> 
+     mutate(
+       fit = map(data, ~ lm(formulaized_lm, data = .x)),
+       tidied = map(fit,broom::tidy),# not actually using now, but might later
+       glanced= map(fit, broom::glance) 
+     ) |> 
+    unnest(glanced) %>% 
+    select(-data, -fit) |> 
+    filter(p.value<0.05) |> 
+    arrange(desc(adj.r.squared))
+  
+  sig_admin_names <- sig_model_stats_tbl$ADM_NAME
+      
+   
+   ind= all.vars(formulaized_lm)[1]
+   deps= all.vars(formulaized_lm)[-1]
+   
+   sig_df_unnested <- df |> 
+     filter(ADM_NAME %in% sig_admin_names) |>
+     unnest(data)
+     
+   plot_list<- deps |> 
+       map(~sig_df_unnested |> 
+       ggplot(aes(x=!!sym(ind), y= !!sym(.x) ))+
+       geom_point()+
+       geom_smooth(method="lm",formula="y~x")
+       ) |> 
+     set_names(paste0("plot_",deps))
+   
+  
+   
+     
+     
+   }
+   
+  }
+nga_model_vis(df = nest_otp,lm_formula = "otp_cases_per_1000~susm+ssm+smp")  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
 
 otp_monthly_full |> 
   nest(
