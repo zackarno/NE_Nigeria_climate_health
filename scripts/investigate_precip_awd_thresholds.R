@@ -121,7 +121,7 @@ object.size(woi_diss)
 leaflet() %>% 
   addTiles() %>% 
   addPolygons(data=woi_diss)
-
+?ee_extract()
 
 chirps_renamed <- chirps$ 
   # CHIRPS release is delayed by a month or 2 so you need to pre-filter
