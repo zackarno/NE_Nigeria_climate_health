@@ -16,7 +16,7 @@ library(tidyverse)
 library(rgee)
 library(sf)
 invisible(purrr::map(list.files(here::here("R"),full.names = T),.f = source))
-map_date_to_bandname_ic
+
 ```
 
 
@@ -54,15 +54,29 @@ Now that we have a better understanding of data and limitations it makes sense t
 
   
   
+**Note:** to add more data to compiled rds:
+    
+- add code to create data in same format (ie. ADM_NAME, value, parameter, date, level, time_desc)
+- bind_rows with mdf loaded in `combine_to_monthly` chunk.
+- re-write rds after checking
+- proceed to `write_to_shiny` chunk
+    
+  
   
 
 ## Data
 
 
 ```{r load_data}
+# and EARTHENGINE_ENV in your .Renviron file to use the Python path:
+# C:\Users\zack.arno\AppData\Local\r-miniconda\envs\rgee/python.exe in future sessions.
+# reticulate::py_install(packages = 'earthengine-api', envname = 'C:/Users/zack.arno/AppData/Local/r-miniconda/envs/rgee')
 
-ee_Initialize()
-
+# trick go to tools, project options (or global options), python
+ee_Initialize(drive = T)
+# ee_Initialize(user = 'ndef', drive = TRUE)
+# ee_install_upgrade()
+# ee_install_set_pyenv("C:/Users/zack.arno/AppData/Local/r-miniconda/envs/rgee")
 # 16 day ndvi composites
 ndvi_dat_src <- "MODIS/006/MOD13Q1"
 ndvi <- ee$ImageCollection(ndvi_dat_src)
@@ -76,6 +90,11 @@ soil_moisture <- ee$ImageCollection(soil_moisture_src)
 
 chirps_src <- "UCSB-CHG/CHIRPS/DAILY"
 chirps <- ee$ImageCollection(chirps_src)
+
+
+viirs <-  ee$ImageCollection("NOAA/VIIRS/DNB/MONTHLY_V1/VCMSLCFG")$
+  filterDate("2016-01-01","2022-01-01")$
+  select('avg_rad')
 
 
 # awd <- readxl::read_excel(here::here("data/Borno_EWARS_awd_under5_2017_2021.xlsx")) |> 
@@ -205,6 +224,18 @@ system.time(
   )
 )
 
+# viirs$first()$projection()$nominalScale()$getInfo()
+# VIIRS monthly
+system.time(
+  VIIRS_gte2016_agg_mean <-spatial_levels |> 
+  map2(.y = spatial_level_extract_cols,.f = ~ee_extract_long(ic = viirs,
+                                                             sf = .x,
+                                                             sf_col = .y,
+                                                             scale =500,
+                                                             reducer = "mean")
+  )
+)
+
 
 
 
@@ -244,6 +275,16 @@ modis_chirps_smap_time_raw$smap <- names(smap_gte2016_agg_mean) |>
         mutate(
           level = .x,
           time_desc = "8-day MODIS" 
+        ) |> 
+        rename_with(.fn = ~"ADM_NAME",.cols = matches("ADM"))
+        ) #|> 
+  
+# VIIRs
+ VIIRS_gte2016_agg_mean_df <- names(VIIRS_gte2016_agg_mean) |> 
+  map_dfr(~VIIRS_gte2016_agg_mean[[.x]] |> 
+        mutate(
+          level = .x,
+          time_desc = "1 month VIIRS" 
         ) |> 
         rename_with(.fn = ~"ADM_NAME",.cols = matches("ADM"))
         ) #|> 
@@ -652,9 +693,17 @@ library(lubridate)
 # put this isn her 2/6/222 - ont sure if it belongs
 modis_chirps_smap_awd_otp_mz_time_raw_df <- read_rds(here::here("data/modis_chirps_smap_awd_otp_orig_ts.rds"))
 
-
+admins$lga |> 
+  filter(str_detect(ADM2_EN,"^G")) |> print(n=30)
 admins <-  load_nga_admins()
 pop <-  read_csv(here::here("data/pop_lga_msna2019_sf.csv"))
+pop |> 
+  left_join( admins$lga) |> 
+  arrange(ADM2_EN) |> 
+  filter(str_detect(ADM2_EN,"^G"))|> print(n=30)
+otp_monthly_full |> 
+  filter(str_detect(ADM_NAME,"^G"))
+
 awd <- load_awd(lgas = NULL)
 awd_w_pop <- awd |> 
   left_join(
@@ -717,7 +766,6 @@ otp_cleaned|>
 # dang its a bit more complicated because some LGAs just are bigger...hmmm why dont i just
 # add number of wards reporting and overall pop and we can account for these
 
-
 otp_by_lga <-
   otp_cleaned|> 
   group_by(LGA,date,.drop=F ) |> 
@@ -773,9 +821,9 @@ otp_by_lga)
 - we have all the data in long format now together
 - we want to produce the data spatio temporal aggregations of interest now....
 - we might want to engineer some dates for monthly data
-- any additional RS aggregates can be calculated aove and added in here as doe in the bind_rows ~line 589
+- any additional RS aggregates can be calculated aove and added in here as doe in the bind_rows ~line 
 
-```{r}
+```{r combine_to_monthly}
 library(janitor)
 library(lubridate)
 library(glue)
@@ -783,6 +831,10 @@ library(glue)
 
 
 mdf <- read_rds(here::here("data/modis_chirps_smap_awd_otp_orig_ts2.rds"))
+
+# mdf <- bind_rows(mdf,VIIRS_gte2016_agg_mean_df)
+# mdf <- mdf |> write_rds(here::here("data/modis_chirps_smap_awd_otp_orig_ts2.rds"))
+
 mdf |> count(parameter)
 mdf |> count(level)
 
@@ -866,6 +918,9 @@ otp_monthly_full <- monthly_lga_wide |>
   filter(!is.na(otp_cases))
 otp_monthly_full |> select(VCI)
 
+
+# otp_monthly_full |> 
+#   write_rds(here::here("data/modis_chirps_smap_awd_otp_orig_ts2.rds"))
 ```
 
 add ACLED data
@@ -935,7 +990,7 @@ acled_monthly_full <- complete(acled_monthly, ADM_NAME, parameter,date,fill = li
 ```
 
 write it out to shiny app directory
-```{r}
+```{r write_to_shiny}
 admins <- load_nga_admins()
 otp_monthly_full <- otp_monthly_full |>
   group_by(
