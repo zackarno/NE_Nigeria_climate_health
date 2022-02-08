@@ -1,0 +1,81 @@
+---
+title: "big_picture_model"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+library(tidyverse)
+library(here)
+library(lubridate)
+library(sf)
+purrr:::map()
+admins <-  load_admins
+md <- read_rds(file = here("data/otp_monthly_ex4.rds"))
+
+# ridiculous # of otp cases per 1000...whats going on
+md <- md |> 
+  filter(ADM_NAME!="Kukawa")
+md |> 
+  colnames()
+```
+
+
+A little feature engineeering
+
+```{r}
+
+
+
+```
+
+```{r}
+md2 <- md |> 
+  group_by(ADM_NAME,yr=year(mo_date)) |> 
+  mutate(
+    fatalities_in_yr= sum(acled_fatalities,na.rm=T),.after=acled_fatalities
+    
+  ) |>
+  ungroup()
+
+md3 <- md2 |> 
+  mutate(mo_date= ymd(mo_date)) |> 
+  arrange(mo_date) |> 
+  group_by(ADM_NAME) |>
+    mutate(
+    fatalities_prev_3_mo = zoo::rollsum(x = acled_fatalities,fill=NA,
+                                        k = 3,align = "right"),.after=acled_fatalities
+  ) |> ungroup()
+
+
+building_polys <-  st_read("data/ne_nga.gpkg",'buildings_bay_states_nga_hotosm')
+
+building_polys <- building_polys |> 
+  mutate(
+    area_calc= sf::st_area(building_polys)
+    )
+
+building_centroids <- building_polys |> 
+  st_centroid()
+
+
+
+```
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
