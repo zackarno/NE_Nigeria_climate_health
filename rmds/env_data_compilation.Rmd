@@ -16,6 +16,7 @@ library(tidyverse)
 library(rgee)
 library(sf)
 invisible(purrr::map(list.files(here::here("R"),full.names = T),.f = source))
+map_date_to_bandname_ic
 ```
 
 
@@ -66,7 +67,7 @@ ee_Initialize()
 ndvi_dat_src <- "MODIS/006/MOD13Q1"
 ndvi <- ee$ImageCollection(ndvi_dat_src)
 
-
+LST <-  ee$ImageCollection("MODIS/006/MOD11A2")$select('LST_Day_1km')
 
 # ee_get_date_ic(ndvi)
 
@@ -75,6 +76,7 @@ soil_moisture <- ee$ImageCollection(soil_moisture_src)
 
 chirps_src <- "UCSB-CHG/CHIRPS/DAILY"
 chirps <- ee$ImageCollection(chirps_src)
+
 
 # awd <- readxl::read_excel(here::here("data/Borno_EWARS_awd_under5_2017_2021.xlsx")) |> 
 #   rename(ADM2_EN = `...1`)
@@ -101,7 +103,7 @@ smap_gte2016 <- soil_moisture$
   filterDate("2016-01-01", "2022-01-19")$
   select("ssm","susm","smp")
 ndvi_gte2016 <- ndvi$filterDate("2016-01-01", "2022-01-01")$select("NDVI","EVI")
-
+LST_gte2016 <-  LST$filterDate("2016-01-01", "2022-01-01")
 
 smap_gte2016 |> ee_get_date_ic()
 smap_gte2016$first()$bandNames()$getInfo()
@@ -192,6 +194,17 @@ system.time(
   )
 )
 
+# LST 16 day
+system.time(
+  LST_gte2016_agg_mean <-spatial_levels |> 
+  map2(.y = spatial_level_extract_cols,.f = ~ee_extract_long(ic = LST_gte2016,
+                                                             sf = .x,
+                                                             sf_col = .y,
+                                                             scale =1000,
+                                                             reducer = "mean")
+  )
+)
+
 
 
 
@@ -220,6 +233,17 @@ modis_chirps_smap_time_raw$smap <- names(smap_gte2016_agg_mean) |>
         mutate(
           level = .x,
           time_desc = "3-day SMAP" 
+        ) |> 
+        rename_with(.fn = ~"ADM_NAME",.cols = matches("ADM"))
+        ) #|> 
+  
+
+# LST
+ LST_gte2016_agg_mean_df <- names(LST_gte2016_agg_mean) |> 
+  map_dfr(~LST_gte2016_agg_mean[[.x]] |> 
+        mutate(
+          level = .x,
+          time_desc = "8-day MODIS" 
         ) |> 
         rename_with(.fn = ~"ADM_NAME",.cols = matches("ADM"))
         ) #|> 
@@ -257,6 +281,10 @@ ndvi <- ndvi$
 ndvi_2000_2010<- ndvi$filterDate("2000-01-01", "2010-12-31")$
   select("NDVI","EVI")
 ndvi_gte2016 <- ndvi$filterDate("2016-01-01", "2022-01-01")$select("NDVI","EVI")
+
+LST_2000_2010<- LST$filterDate("2000-01-01", "2010-12-31")$
+  select("NDVI","EVI")
+
 
 
 # I need to figure out trick to combine reducers so the 4 stats below can be calculated together
@@ -316,6 +344,59 @@ ndvi_zscore<- ndvi_gte2016_w_historical_bands$map(
   }
   
 ) 
+vci<- ndvi_gte2016_w_historical_bands$map(
+  function(img){
+    vci<- img$expression(
+      "float((NDVI-NDVI_min)/(NDVI_max-NDVI_min))",
+      opt_map= list(NDVI= img$select("NDVI"),
+                    NDVI_min= img$select("NDVI_min"),
+                    NDVI_max= img$select("NDVI_max")
+      )
+    )$rename("VCI")
+    img$select("NDVI")$addBands(vci)
+  }
+  
+) 
+
+vci |> 
+  ee_print()
+# simoplify expression procedure into functions
+########################################
+# bex <- c("NDVI","NDVI_max","NDVI_min")
+# calc_vars_split <- stringr::str_split(
+#   "float((NDVI-NDVI_min)/(NDVI_max-NDVI_min))",pattern = "\\*|-|\\+|^\\/|\\(|\\)"
+# )[[1]]
+# 
+# library(tidyverse)
+# bla <- calc_vars_split[calc_vars_split%in%bex]
+# bla |> 
+#   map(
+# ~list(
+#   function(im) im$select(.x)
+# )
+# 
+# ) |> set_names(bla)
+# 
+# bla_list <- list()
+# for(i in 1:length(bla)){
+#   blat <-  bla[[i]]
+#   print(blat)
+#   bla_list[[i]] <- list(
+#      function(x){x$select(eval(blat))}
+#   )
+#   
+# }
+# function(ic, expression){
+#   ic$map(
+#     function(img){
+#       img_calc <-  img$expression(
+#         
+#       )
+#     }
+#   )
+# }
+##############################################
+
 
 # ndvi_zscore$first()$projection()$nominalScale()$getInfo()
 # ee_extract_long |> debugonce()
@@ -334,8 +415,47 @@ system.time(
 )
 
 
+# ck <- ee_extract_long(ic = ndvi_zscore,
+#                 sf = spatial_levels$mj_lgas_dissolved,
+#                 sf_col = "ADM2_EN",
+#                 scale =250,
+#                 reducer = "mean")
+# 
+# # vci |> ee_print()
+# # ndvi_zscore |> ee_print()
+# 
+# ck2<- ee_extract_long(ic = vci,
+#                 sf = spatial_levels$mj_lgas_dissolved,
+#                 sf_col = "ADM2_EN",
+#                 scale =250,
+#                 reducer = "mean")
+  # VCI
+# debugonce(ee_extract_long)
+system.time(
+  vci_gte2016_agg_mean <-spatial_levels |> 
+  map2(.y = spatial_level_extract_cols,.f = ~ee_extract_long(ic = vci,
+                                                             sf = .x,
+                                                             sf_col = .y,
+                                                             scale =250,
+                                                             reducer = "mean")
+  )
+)
+
+
 modis_chirps_smap_awd_otp_time_raw_df |> count(time_desc)
 
+
+vci_gte2016_agg_mean_df <- names(vci_gte2016_agg_mean) |> 
+  map_dfr(~vci_gte2016_agg_mean[[.x]] |> 
+            filter(parameter=="VCI") |> 
+        mutate(
+          level = .x,
+          time_desc = "16-day MODIS" 
+        ) |> 
+         rename_with(.fn = ~"ADM_NAME",.cols = matches("ADM"))
+      ) 
+
+# i think i should take the average vci per month
 
 ndvi_gte2016_agg_mean_df <- names(ndvi_gte2016_agg_mean) |> 
   map_dfr(~ndvi_gte2016_agg_mean[[.x]] |> 
@@ -358,13 +478,182 @@ modis_chirps_smap_awd_otp_mz_time_raw_df <- bind_rows(modis_chirps_smap_awd_otp_
 
 ```
 
+copy above chunk, but for LST
+```{r}
+
+
+
+LST_2000_2010<- LST$filterDate("2000-01-01", "2010-12-31")
+# LST_2000_2010 |> ee_get_date_ic()
+
+
+# I need to figure out trick to combine reducers so the 4 stats below can be calculated together
+ LST_10yr_mean<- yr_mo_composite_stat_ic2(dat =LST_2000_2010,
+                                      month_range = c(1,12),
+                                      year_range = c(2000,2010),
+                                      stat = "mean",
+                                      monthly_stat_per = "range") |>
+   ic_add_month_property()
+ # 
+ 
+ LST_10yr_sd<- yr_mo_composite_stat_ic2(dat =LST_2000_2010,
+                                      month_range = c(1,12),
+                                      year_range = c(2000,2010),
+                                      stat = c("sd"),
+                                      monthly_stat_per = "range") |> 
+   ic_add_month_property()
+ LST_10yr_min<- yr_mo_composite_stat_ic2(dat =LST_2000_2010,
+                                      month_range = c(1,12),
+                                      year_range = c(2000,2010),
+                                      stat = c("min"),
+                                      monthly_stat_per = "range") |> 
+   ic_add_month_property()
+ 
+ LST_10yr_max<- yr_mo_composite_stat_ic2(dat =LST_2000_2010,
+                                      month_range = c(1,12),
+                                      year_range = c(2000,2010),
+                                      stat = c("max"),
+                                      monthly_stat_per = "range") |> 
+   ic_add_month_property()
+
+ 
+ # new func
+ LST_10yr_stats <- LST_10yr_mean |> 
+   ic_join_bands(y = LST_10yr_sd,by = "moy") |>  
+   ic_join_bands(y=LST_10yr_max,by = "moy") |> 
+   ic_join_bands(y=LST_10yr_min,by = "moy") 
+
+
+
+LST_gte2016_w_historical_bands<- ic_join_bands(x = LST_gte2016 |> ic_add_month_property(),
+                                                    y = LST_10yr_stats |> ic_add_month_property(),
+                                                    by = "moy")
+
+LST_gte2016_w_historical_bands$first()$bandNames()$getInfo()
+# this is still a bit ugly - opened issue wrap simplifier
+LST_zscore<- LST_gte2016_w_historical_bands$map(
+  function(img){
+    zscore<- img$expression(
+      "float((LST_Day_1km-LST_Day_1km_mean)/(LST_Day_1km_stdDev))",
+      opt_map= list(LST_Day_1km= img$select("LST_Day_1km"),
+                    LST_Day_1km_mean= img$select("LST_Day_1km_mean"),
+                    LST_Day_1km_stdDev= img$select("LST_Day_1km_stdDev")
+      )
+    )$rename("LST_z_score")
+    img$select("LST_Day_1km")$addBands(zscore)
+  }
+  
+) 
+
+LST_zscore |> ee_print()
+# ndvi_zscore$first()$projection()$nominalScale()$getInfo()
+# ee_extract_long |> debugonce()
+# ck <- ee_extract_long(ic = ndvi_zscore,sf = spatial_levels$mj_lgas_dissolved,sf_col = "ADM2_EN",scale = 250,reducer = "mean")
+
+
+  # LST
+system.time(
+  LST_zscore <-spatial_levels |> 
+  map2(.y = spatial_level_extract_cols,.f = ~ee_extract_long(ic = LST_zscore,
+                                                             sf = .x,
+                                                             sf_col = .y,
+                                                             scale =1000,
+                                                             reducer = "mean")
+  )
+)
+
+
+# ck <- ee_extract_long(ic = ndvi_zscore,
+#                 sf = spatial_levels$mj_lgas_dissolved,
+#                 sf_col = "ADM2_EN",
+#                 scale =250,
+#                 reducer = "mean")
+# 
+# # vci |> ee_print()
+# # ndvi_zscore |> ee_print()
+# 
+# ck2<- ee_extract_long(ic = vci,
+#                 sf = spatial_levels$mj_lgas_dissolved,
+#                 sf_col = "ADM2_EN",
+#                 scale =250,
+#                 reducer = "mean")
+  # VCI
+# debugonce(ee_extract_long)
+system.time(
+  vci_gte2016_agg_mean <-spatial_levels |> 
+  map2(.y = spatial_level_extract_cols,.f = ~ee_extract_long(ic = vci,
+                                                             sf = .x,
+                                                             sf_col = .y,
+                                                             scale =250,
+                                                             reducer = "mean")
+  )
+)
+
+
+modis_chirps_smap_awd_otp_time_raw_df |> count(time_desc)
+
+
+vci_gte2016_agg_mean_df <- names(vci_gte2016_agg_mean) |> 
+  map_dfr(~vci_gte2016_agg_mean[[.x]] |> 
+            filter(parameter=="VCI") |> 
+        mutate(
+          level = .x,
+          time_desc = "16-day MODIS" 
+        ) |> 
+         rename_with(.fn = ~"ADM_NAME",.cols = matches("ADM"))
+      ) 
+
+# i think i should take the average vci per month
+
+ndvi_gte2016_agg_mean_df <- names(ndvi_gte2016_agg_mean) |> 
+  map_dfr(~ndvi_gte2016_agg_mean[[.x]] |> 
+        mutate(
+          level = .x,
+          time_desc = "16-day MODIS" 
+        ) |> 
+         rename_with(.fn = ~"ADM_NAME",.cols = matches("ADM"))
+      ) 
+
+
+#
+LST_zscore_gte2016_agg_mean_df <- names(LST_zscore) |> 
+  map_dfr(~LST_zscore[[.x]] |> 
+        mutate(
+          level = .x,
+          time_desc = "8-day MODIS" 
+        ) |> 
+         rename_with(.fn = ~"ADM_NAME",.cols = matches("ADM"))
+      ) 
+
+
+
+
+modis_chirps_smap_awd_otp_mz_time_raw_df <- bind_rows(modis_chirps_smap_awd_otp_time_raw_df |> 
+  filter(time_desc!="16-day MODIS") ,
+  ndvi_gte2016_agg_mean_df
+)
+  # 
+# modis_chirps_smap_awd_otp_mz_time_raw_df |> 
+  # write_rds(here::here("data/modis_
+
+
+
+```
+
 
 
 #  OTP & AWD data in long format to bind 
 
 also should calculate prevalence by dividing by pop #
 ```{r}
+library(sf)
+library(lubridate)
 
+# put this isn her 2/6/222 - ont sure if it belongs
+modis_chirps_smap_awd_otp_mz_time_raw_df <- read_rds(here::here("data/modis_chirps_smap_awd_otp_orig_ts.rds"))
+
+
+admins <-  load_nga_admins()
 pop <-  read_csv(here::here("data/pop_lga_msna2019_sf.csv"))
 awd <- load_awd(lgas = NULL)
 awd_w_pop <- awd |> 
@@ -376,8 +665,8 @@ awd_w_pop <- awd |>
     by="ADM2_EN"
   ) |> 
   left_join(pop, by="ADM2_PCODE") 
-library(lubridate)
-modis_chirps_smap_time_raw_df |> count(level)  
+
+
 awd_w_pop_prev_long <- awd_w_pop |> 
   mutate(
     date= ymd(date),
@@ -395,8 +684,12 @@ awd_w_pop_prev_long <- awd_w_pop |>
 
 
 modis_chirps_smap_awd_time_raw_df <- bind_rows(modis_chirps_smap_time_raw_df,awd_w_pop_prev_long)
-
-
+otp |> 
+  group_by(State, LGA,Ward,site_name) |> 
+  count() |> 
+  print(n=200)
+otp |> 
+  filter(Ward=="Bille")
 otp <-  read_rds(here::here("data/20220121_MUAC_w_maidu_jere_wards_harmonized.rds"))
 # a little extra cleaning required
 otp_cleaned <- otp |> 
@@ -407,28 +700,35 @@ otp_cleaned <- otp |>
   filter(!is.na(date)) |> 
   filter(date>"2010-01-01") # weird outlier removal
 
+otp_cleaned |> 
+  filter(!is.na(muac_total_screened))
+
 # show relationship between wards reporting and total cases
 otp_cleaned|> 
   group_by(LGA,date,.drop=F ) |> 
   summarise(
     otp_cases=sum(new_otp_admissions,na.rm=T),
-    wards_reporting = sum(!is.na(new_otp_admissions)),
+    sites_reporting = sum(!is.na(new_otp_admissions)),
     .groups = "drop"
   ) |> 
-  ggplot(aes(x= wards_reporting,y=otp_cases))+
+  ggplot(aes(x= sites_reporting,y=otp_cases))+
   geom_point()
 
 # dang its a bit more complicated because some LGAs just are bigger...hmmm why dont i just
 # add number of wards reporting and overall pop and we can account for these
 
 
-otp_by_lga <- otp_cleaned|> 
+otp_by_lga <-
+  otp_cleaned|> 
   group_by(LGA,date,.drop=F ) |> 
   summarise(
     otp_cases=sum(new_otp_admissions,na.rm=T),
-    wards_reporting = sum(!is.na(new_otp_admissions)),
-    .groups = "drop"
+    sites_reporting = sum(!is.na(new_otp_admissions)),
+    otp_cases_per_site = otp_cases/sites_reporting,
+    .groups = "drop_last"
   ) |> 
+  mutate(median_sites_reporting= median(sites_reporting,na.rm=T)) |> 
+  ungroup() |> 
   left_join(
     admins$lga |> 
       st_drop_geometry() |> 
@@ -440,8 +740,8 @@ otp_by_lga <- otp_cleaned|>
     otp_cases_per_1000=(otp_cases/pop)*1000
   ) |> 
   rename(ADM_NAME="LGA") |> 
-  select(ADM_NAME,date, otp_cases,otp_cases_per_1000,wards_reporting) |> 
-  pivot_longer(otp_cases:wards_reporting,names_to = "parameter") |> 
+  select(ADM_NAME,date, otp_cases,otp_cases_per_1000,sites_reporting,otp_cases_per_site) |> 
+  pivot_longer(otp_cases:otp_cases_per_site,names_to = "parameter") |> 
   mutate(
     level= "ne_lgas_all",
     time_desc= "1-month OTP"
@@ -455,6 +755,17 @@ modis_chirps_smap_awd_otp_time_raw_df<- bind_rows(modis_chirps_smap_awd_time_raw
 
 # modis_chirps_smap_awd_otp_time_raw_df |>
 #   write_rds(here::here("data/modis_chirps_smap_awd_otp_orig_ts.rds"))
+
+
+# mdf <- read_rds(here::here("data/modis_chirps_smap_awd_otp_orig_ts.rds"))
+# mdf <- read_rds(here::here("data/modis_chirps_smap_awd_otp_orig_ts.rds"))
+
+mdf <- bind_rows(mdf |> 
+  filter(time_desc!="1-month OTP") ,
+otp_by_lga)
+
+# mdf |> count(parameter)
+# mdf |> write_rds(here::here("data/modis_chirps_smap_awd_otp_orig_ts2.rds"))
 ```
 
 
@@ -462,13 +773,33 @@ modis_chirps_smap_awd_otp_time_raw_df<- bind_rows(modis_chirps_smap_awd_time_raw
 - we have all the data in long format now together
 - we want to produce the data spatio temporal aggregations of interest now....
 - we might want to engineer some dates for monthly data
+- any additional RS aggregates can be calculated aove and added in here as doe in the bind_rows ~line 589
 
 ```{r}
 library(janitor)
 library(lubridate)
 library(glue)
-mdf <- read_rds(here::here("data/modis_chirps_smap_awd_otp_orig_ts.rds"))
 
+
+
+mdf <- read_rds(here::here("data/modis_chirps_smap_awd_otp_orig_ts2.rds"))
+mdf |> count(parameter)
+mdf |> count(level)
+
+mdf |> filter(year(date)>=2017) |> filter(ADM_NAME =="Kukawa") |> 
+   mutate(
+    mo_date= glue("{year(date)}-{month(date)}-01"),
+    level2= if_else(level %in% c("ne_lgas_all","ne_lgas_borno","lga"),"lga",level)
+  ) |> 
+  filter(level2=="lga",parameter=="otp_cases_per_1000")
+# since i calculated vci above i can take that out put nd put it here
+# acled_monthly_full
+# mdf2<- bind_rows(mdf,acled_monthly_full)
+
+
+# mdf2 |> write_rds(here::here("data/modis_chirps_smap_awd_otp_orig_ts.rds"))
+mdf |> 
+  filter(time_desc=="1-month OTP")
 # for OTP data we have no choice but to look at monthly data
 # for AWD we can potentially do weekly, but will be hard to get NDVI at weekly
 
@@ -476,7 +807,7 @@ lga_level_dat <- mdf |>
   filter(year(date)>=2017) |> 
   mutate(
     mo_date= glue("{year(date)}-{month(date)}-01"),
-    level2= if_else(level %in% c("ne_lgas_all","ne_lgas_borno"),"lga",level)
+    level2= if_else(level %in% c("ne_lgas_all","ne_lgas_borno","lga"),"lga",level)
   ) |> 
   filter(level2=="lga")
 
@@ -513,7 +844,9 @@ monthly_lga_level <- lga_level_dat |>
     value_sum= sum(value,na.rm=T),
     .groups="drop"
   ) |> 
-  mutate(value= if_else(parameter%in%c("precipitation","awd_cases","otp_cases"), value_sum,value_mean))
+  mutate(value= if_else(
+    parameter%in%c("precipitation","awd_cases","otp_cases"),
+    value_sum,value_mean))# will result in average # of ward reporting... 
 
 
 # pivot wider  and add on precip stats
@@ -531,9 +864,77 @@ monthly_lga_wide <- monthly_lga_level |>
 # i think this is a pretty reasonable dat set to use for modeling
 otp_monthly_full <- monthly_lga_wide |> 
   filter(!is.na(otp_cases))
+otp_monthly_full |> select(VCI)
+
 ```
 
+add ACLED data
+```{r}
+library(leaflet)
+acled <- read_csv(here::here("data/2015-01-01-2022-02-01--Nigeria_ACLED.csv"))
+acled %>% janitor::tabyl(admin1) %>% arrange(desc(n))
+acled_sf <- st_as_sf(acled, coords=c("longitude","latitude"),crs=4326)
+admins <- load_nga_admins()
+ne_states<- admins$state %>% 
+  filter(ADM1_EN %in% c("Borno","Yobe","Adamawa"))
+ne_lgas<- admins$state %>% 
+  filter(ADM1_EN %in% c("Borno","Yobe","Adamawa"))
 
+ne_wards <- admins$ward %>% 
+  filter(ADM1_EN %in% c("Borno","Yobe","Adamawa"))
+acled_ne_j<- st_join(acled_sf, ne_wards)
+acled_ne_j %>% glimpse()
+acled_ne_j <- acled_ne_j %>% 
+  filter(!is.na(ADM1_EN)) 
+
+acled_ne_violent <- acled_ne_j %>% 
+  filter(str_detect(tolower(event_type),"violence|battle")) 
+
+
+acled_ne_simp <- acled_ne_violent %>% 
+  mutate(
+    date= dmy(event_date)
+  ) %>% 
+  select(date, fatalities, event_type,matches("^admin.+|^ADM.+"))
+
+
+
+
+acled_monthly <- acled_ne_simp |> 
+  st_drop_geometry() |> 
+  group_by(
+    ADM2_EN,
+    mo_date=ymd(glue("{year(date)}-{month(date)}-01"))
+  ) |> 
+  summarise(
+    acled_fatalities = sum(fatalities),
+    acled_events= n(),.groups = "drop"
+  ) |> 
+  pivot_longer(acled_fatalities:acled_events) |> 
+  mutate(
+    level = "lga",
+    time_desc = "ACLED"
+    
+  ) |> 
+  rename(
+    ADM_NAME="ADM2_EN",
+    date= "mo_date",
+    parameter= "name"
+
+         ) |> 
+  filter(date>="2016-01-01")
+
+acled_monthly %>% 
+  group_by(ADM_NAME,date) %>% 
+  complete(value) %>% 
+  ungroup()
+
+acled_monthly_full <- complete(acled_monthly, ADM_NAME, parameter,date,fill = list(value=0, level="lga",time_desc="ACLED"))
+
+
+```
+
+write it out to shiny app directory
 ```{r}
 admins <- load_nga_admins()
 otp_monthly_full <- otp_monthly_full |>
@@ -547,32 +948,27 @@ otp_monthly_full <- otp_monthly_full |>
     ) |> 
   ungroup()
 
+otp_monthly_full |>
+  left_join(admins$lga, by=c("ADM_NAME"="ADM2_EN")  ) |> 
+  saveRDS(file = here::here("../impact-initiatives-geospatial/nga_climate_health_data_explorer/data/otp_monthly_ex4.rds"))
+# otp_monthly_full |>
+#   left_join(admins$lga, by=c("ADM_NAME"="ADM2_EN")  ) |> 
+#   saveRDS(file = here::here("data/otp_monthly_ex4.rds"))
 
-
-mtcars <- as_tibble(mtcars)  # to play nicely with list-cols
-
-nest_mtcars <- mtcars %>%
-  nest(data = c(-am)) 
-
-nest_mtcars %>% 
-  mutate(
-    fit = map(data, ~ lm(wt ~ mpg + qsec + gear, data = .x)),  # S3 list-col
-    # tidied = map(fit, broom::tidy)
-  ) %>% 
-  unnest(tidied) %>% 
-  select(-data, -fit)
+read_rds( file = here::here("../impact-initiatives-geospatial/nga_climate_health_data_explorer/otp_monthly_ex1.rds"))
+read_rds( file = here::here("../impact-initiatives-geospatial/nga_climate_health_data_explorer/data/adm2_nga.rds"))
+# admins$lga |>
+#   filter(ADM1_EN %in% c("Borno","Adamawa","Yobe")) |>
+#   write_rds(here::here("../impact-initiatives-geospatial/nga_climate_health_data_explorer/adm2_nga.rds"))
   
-otp_monthly_full$precipitation
+# dir(here::here("../impact-initiatives-geospatial/nga_climate_health_data_explorer/"))
+
 nest_otp <- otp_monthly_full %>%
   filter(!is.na(otp_cases_per_1000)) |> 
   filter(!is.na(precipitation)) |> 
   nest(data = c(-ADM_NAME)) 
 
-# need to add wards reporting.
-bla <- otp_monthly_full |> 
-  filter(ADM_NAME=="Nganzai")
-boom<- lm(otp_cases_per_1000~precipitation+precip_max_3day, data= bla) |> broom::glance()
-summary(boom)
+
 # 59/12
 # otp_monthly_full$mo_date |> unique()
 nest_otp |> 
@@ -709,12 +1105,7 @@ nga_model_vis <- function(df=nest_otp,lm_formula){
      by=c("ADM2_EN"="ADM_NAME")
        
      )
-   mypalette <- leaflet::colorNumeric( palette="viridis", 
-                                       domain=ne_nga_admin_vals |> 
-                                         filter(p.value<0.05) |>
-                                         pull(adj.r.squared),
-                                       na.color="grey")
-
+  
   
    bins <- c(0,0.1,0.2,0.25,0.3,0.33,0.37,0.4,0.44)
    pal <- leaflet::colorBin("YlGn", domain = abs(ne_nga_admin_vals$adj.r.squared), bins = bins)
@@ -728,12 +1119,18 @@ nga_model_vis <- function(df=nest_otp,lm_formula){
   lapply(htmltools::HTML)
 
    res$leaflet_map <- leaflet::leaflet(ne_nga_admin_vals) |> 
-     leaflet::addTiles() |> 
+     leaflet::addProviderTiles(provider =leaflet::providers$Esri.WorldImagery ) |> 
+     # leaflet::addTiles(leaflet::providers$Esri.WorldImagery) |> 
      leaflet::addPolygons(
        color=ne_nga_admin_vals$sig_tf,
        fillColor = ~pal(abs(adj.r.squared)),
-       label= tooltip
-   ) 
+       label= tooltip,fillOpacity = 1,group = "admin"
+   ) |> 
+     leaflet::addLayersControl(
+       baseGroups = c("OSM (default)", "Toner", "Toner Lite"),
+       overlayGroups = c("admin"),
+       options = leaflet::layersControlOptions(collapsed = FALSE)
+  )
    list(plot_list,res) |> flatten()
    
   
@@ -742,16 +1139,18 @@ nga_model_vis <- function(df=nest_otp,lm_formula){
      
   }
    
+otp_monthly_full |> arrange(ADM_NAME)
   
 mod_res<- nga_model_vis(
   df = nest_otp,
-  lm_formula = "otp_cases_per_1000~precip_max_5day")  
+  lm_formula = "otp_cases_per_1000~NDVI_z_score")  
 
-otp_monthly_full
-mod_res$plot_precip_max_5day
+windows();mod_res$plot_NDVI_z_score
+windows();mod_res$plot_NDVI_z_score
+mod_res$plot_NDVI_z_score
 mod_res$leaflet_map
   
-  
+
   
   
   
@@ -779,7 +1178,7 @@ lm(otp_cases_per_1000~precipitation+NDVI, otp_monthly_full ) |> summary()
 
 
 
-
+```{r}
 weekly_lga <- mdf |> 
   filter(year(date)>=2017) |> 
   mutate(
