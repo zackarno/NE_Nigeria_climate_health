@@ -17,10 +17,12 @@ knitr::opts_chunk$set(
 
 <!-- badges: start -->
 <!-- badges: end -->
-Repository to store analysis of climate and health data in NE in Nigeria
+Repository to store analysis of climate and health data in NE in Nigeria.
 
-```{r, echo=FALSE,message=F}
-library(tidyverse)
+Some the initial findings displayed view some [preliminary investigations here](https://zackarno.github.io/NE_Nigeria_climate_health/)
+
+```{r, echo=FALSE,message=F,warning=F}
+library(tidyverse,quietly = T)
 library(dygraphs)
 library(xts)
 
