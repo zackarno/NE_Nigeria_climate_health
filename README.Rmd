@@ -123,9 +123,10 @@ precip_awd_dygraph<-dygraph(dat_xts) %>%
   + sub-surface soil moisture
   + AWD cases/100
   
+Could not get dynamic graph to work on GH readme so going with static screenshot for now:
   
 <!-- <img src="README_files/figure-gfm/awd_cases_precip_moisture.html" /> -->
-```{r, results='markup'}
+```{r, echo=F, eval=F,results='markup'}
 
 htmltools::tags$iframe(
   src=file.path(here::here("README_files/figure-gfm"), "awd_cases_precip_moisture.html"),
@@ -138,7 +139,9 @@ htmltools::tags$iframe(
 
 ```
 
-
+```{r, echo=F,results ="asis" ,out.width="100%"}
+knitr::include_graphics(here::here("README_files/figure-gfm/readme_dynamic_timeseries_screenshot.PNG"))
+```
 
 
 ## Establishing Environmental Thresholds
@@ -147,7 +150,7 @@ htmltools::tags$iframe(
 - Rainfall generally declines after this initial peak
 - Below we have graphed cumulative yearly rainfall against AWD caseload
   + we see that AWD caseloads tend to peak in a narrow band of cumulative rainfall
-```{r,echo=F,results="asis"}
+```{r,echo=F,results="asis",message=F,warning=F}
 
 
 # chirps_daily_long <- chirps_daily_long %>% 
