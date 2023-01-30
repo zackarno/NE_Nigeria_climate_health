@@ -150,7 +150,8 @@ knitr::include_graphics(here::here("README_files/figure-gfm/readme_dynamic_times
 - Rainfall generally declines after this initial peak
 - Below we have graphed cumulative yearly rainfall against AWD caseload
   + we see that AWD caseloads tend to peak in a narrow band of cumulative rainfall
-```{r,echo=F,results="asis",message=F,warning=F}
+  
+```{r,eval=T,echo=F,results="asis",message=F,warning=F}
 
 
 # chirps_daily_long <- chirps_daily_long %>% 

@@ -34,4 +34,5 @@ screenshot for now:
 - Below we have graphed cumulative yearly rainfall against AWD caseload
   - we see that AWD caseloads tend to peak in a narrow band of
     cumulative rainfall
-    ![](README_files/figure-gfm/unnamed-chunk-7-1.png)<!-- -->
+
+![](README_files/figure-gfm/unnamed-chunk-7-1.png)<!-- -->
